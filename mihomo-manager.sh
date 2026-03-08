@@ -11,7 +11,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -901,13 +901,17 @@ menu_self_update() {
     section "脚本自更新"
 
     info "当前版本: v$SCRIPT_VERSION"
-    info "正在检查最新版本..."
+    info "正在检查最新版本（最长等待 30 秒）..."
 
     local LATEST_VER
-    LATEST_VER=$(curl -fsSL --max-time 10 "$SCRIPT_VERSION_URL" 2>/dev/null | tr -d '[:space:]')
+    LATEST_VER=$(curl -fsSL --max-time 30 "$SCRIPT_VERSION_URL" 2>/dev/null | tr -d '[:space:]')
 
     if [ -z "$LATEST_VER" ]; then
-        error "无法获取版本信息，请检查网络连接"
+        error "无法获取版本信息"
+        echo ""
+        warn "可能原因：raw.githubusercontent.com 网络延迟过高"
+        warn "可稍后重试，或手动更新："
+        echo "  curl -Lo $SCRIPT_PATH $SCRIPT_RAW_URL && chmod +x $SCRIPT_PATH"
         pause
         return
     fi
