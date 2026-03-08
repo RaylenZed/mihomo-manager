@@ -11,7 +11,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -289,9 +289,15 @@ menu_install() {
     mkdir -p "$CONFIG_DIR/ruleset"
     _install_geodata
     _install_service
+    _install_alias
 
     info "安装完成！"
     pause
+}
+
+_install_alias() {
+    ln -sf "$SCRIPT_PATH" /usr/local/bin/mm
+    info "已创建快捷命令 mm（等同于 mihomo-manager）"
 }
 
 _install_geodata() {
