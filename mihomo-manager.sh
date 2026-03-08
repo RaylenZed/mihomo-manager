@@ -11,6 +11,9 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
+SCRIPT_VERSION="1.1.0"
+SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
+SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -88,7 +91,9 @@ main_menu() {
             "13" "─────────────────────" \
             "15" "Tailscale 管理  [$TS_INSTALLED]" \
             "16" "$TS_LABEL" \
+            "17" "─────────────────────" \
             "14" "卸载 Mihomo" \
+            "18" "脚本自更新  [当前 v$SCRIPT_VERSION]" \
             "0" "退出" \
             3>&1 1>&2 2>&3) || break
 
@@ -106,7 +111,9 @@ main_menu() {
             12) menu_log ;;
             15) menu_tailscale_manage ;;
             16) menu_tailscale ;;
+            17) : ;;
             14) menu_uninstall ;;
+            18) menu_self_update ;;
             0)  clear; exit 0 ;;
         esac
     done
@@ -880,6 +887,76 @@ menu_uninstall() {
 
     info "卸载完成"
     pause
+}
+
+# ── 脚本自更新 ───────────────────────────────────────────────
+menu_self_update() {
+    require_root || return
+    clear
+    section "脚本自更新"
+
+    info "当前版本: v$SCRIPT_VERSION"
+    info "正在检查最新版本..."
+
+    local LATEST_VER
+    LATEST_VER=$(curl -fsSL --max-time 10 "$SCRIPT_VERSION_URL" 2>/dev/null | tr -d '[:space:]')
+
+    if [ -z "$LATEST_VER" ]; then
+        error "无法获取版本信息，请检查网络连接"
+        pause
+        return
+    fi
+
+    info "最新版本: v$LATEST_VER"
+
+    if [ "$SCRIPT_VERSION" = "$LATEST_VER" ]; then
+        echo ""
+        info "已是最新版本，无需更新"
+        pause
+        return
+    fi
+
+    echo ""
+    if ! whiptail --title "发现新版本" \
+        --yesno "当前版本：v$SCRIPT_VERSION\n最新版本：v$LATEST_VER\n\n是否立即更新？" \
+        10 45 3>&1 1>&2 2>&3; then
+        return
+    fi
+
+    clear
+    section "下载更新..."
+
+    local TMP_SCRIPT
+    TMP_SCRIPT=$(mktemp /tmp/mihomo-manager-XXXXXX.sh)
+
+    if curl -fsSL --max-time 30 -o "$TMP_SCRIPT" "$SCRIPT_RAW_URL"; then
+        # 验证下载的文件是合法脚本
+        if ! bash -n "$TMP_SCRIPT" 2>/dev/null; then
+            error "下载的文件校验失败，已中止更新"
+            rm -f "$TMP_SCRIPT"
+            pause
+            return
+        fi
+
+        chmod +x "$TMP_SCRIPT"
+        # 备份当前脚本
+        cp "$SCRIPT_PATH" "${SCRIPT_PATH}.bak"
+        info "已备份当前版本到 ${SCRIPT_PATH}.bak"
+
+        # 替换脚本
+        mv "$TMP_SCRIPT" "$SCRIPT_PATH"
+        info "更新完成！当前版本 → v$LATEST_VER"
+        echo ""
+        warn "脚本已替换，即将重新启动..."
+        sleep 2
+        exec "$SCRIPT_PATH"
+    else
+        rm -f "$TMP_SCRIPT"
+        error "下载失败，更新已中止"
+        warn "可手动更新："
+        echo "  curl -Lo $SCRIPT_PATH $SCRIPT_RAW_URL"
+        pause
+    fi
 }
 
 # ── 入口 ──────────────────────────────────────────────────────
