@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.0.2"
+SCRIPT_VERSION="2.0.3"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -631,48 +631,20 @@ _ts_up() {
     echo ""
 
     if ! tailscale status >/dev/null 2>&1; then
-        # tailscale login/up 直接写入 /dev/tty，shell 无法重定向捕获
-        # 正确方案：后台启动登录流程，轮询本地 API socket 获取 AuthURL
-        warn "尚未登录，正在启动认证流程..."
+        warn "尚未登录，请选择认证方式："
         echo ""
-
-        local ts_sock="/var/run/tailscale/tailscaled.sock"
-        local ts_api="http://local-tailscaled.sock/localapi/v0/status"
-
-        # 后台启动登录，触发服务端生成认证链接
-        tailscale login >/dev/null 2>&1 &
-        local ts_pid=$!
-
-        # 轮询本地 API，等待 AuthURL 出现（最多 15 秒）
-        local auth_url="" i=0
-        while [ $i -lt 30 ]; do
-            sleep 0.5
-            auth_url=$(curl -s --unix-socket "$ts_sock" "$ts_api" 2>/dev/null \
-                | grep -o '"AuthURL":"[^"]*"' | cut -d'"' -f4)
-            [ -n "$auth_url" ] && break
-            i=$((i + 1))
-        done
-
-        kill "$ts_pid" 2>/dev/null || true
-
-        if [ -n "$auth_url" ]; then
-            echo -e "  请在浏览器中打开以下链接完成认证："
-            echo ""
-            echo -e "  ${BOLD}${CYAN}$auth_url${NC}"
-            echo ""
-            warn "认证完成后按 Enter 继续..."
-            read -r
-        else
-            error "未能获取认证链接，请检查 tailscaled 服务是否正常运行"
-            echo ""
-            warn "可手动执行：tailscale login"
-            pause; return
-        fi
-
-        # 认证完成后建立连接
+        echo "  1. URL 登录（浏览器扫码）"
+        echo "  2. Auth Key 登录（从 Tailscale 控制台生成）"
+        echo "  0. 取消"
         echo ""
-        info "正在建立连接..."
-        tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败，请稍后重试"
+        printf "  请输入选项: "
+        read -r login_choice
+
+        case "$login_choice" in
+            1) _ts_login_url "$extra" ;;
+            2) _ts_login_key "$extra" ;;
+            *) return ;;
+        esac
     else
         tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败"
     fi
@@ -682,6 +654,72 @@ _ts_up() {
     ts_ip=$(tailscale ip 2>/dev/null | head -1)
     [ -n "$ts_ip" ] && info "本机 Tailscale IP: $ts_ip"
     pause
+}
+
+_ts_login_url() {
+    local extra="$1"
+    local ts_sock="/var/run/tailscale/tailscaled.sock"
+    local ts_api="http://local-tailscaled.sock/localapi/v0/status"
+
+    info "正在获取认证链接..."
+    echo ""
+
+    # 后台启动登录流程，触发服务端生成 AuthURL
+    tailscale login >/dev/null 2>&1 &
+    local ts_pid=$!
+
+    # 轮询本地 API socket，等待 AuthURL 出现（最多 15 秒）
+    local auth_url="" i=0
+    while [ $i -lt 30 ]; do
+        sleep 0.5
+        auth_url=$(curl -s --unix-socket "$ts_sock" "$ts_api" 2>/dev/null \
+            | grep -o '"AuthURL":"[^"]*"' | cut -d'"' -f4)
+        [ -n "$auth_url" ] && break
+        i=$((i + 1))
+    done
+
+    kill "$ts_pid" 2>/dev/null || true
+
+    if [ -n "$auth_url" ]; then
+        echo -e "  请在浏览器中打开以下链接完成认证："
+        echo ""
+        echo -e "  ${BOLD}${CYAN}$auth_url${NC}"
+        echo ""
+        warn "认证完成后按 Enter 继续..."
+        read -r
+        echo ""
+        info "正在建立连接..."
+        tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败，请稍后重试"
+    else
+        error "未能获取认证链接"
+        echo ""
+        warn "可能原因：代理节点无法访问 Tailscale 服务器"
+        warn "建议切换代理节点后重试，或改用 Auth Key 方式登录"
+        warn "Auth Key 生成地址：https://login.tailscale.com/admin/authkeys"
+    fi
+}
+
+_ts_login_key() {
+    local extra="$1"
+    echo ""
+    warn "请先在浏览器打开以下地址生成 Auth Key："
+    echo ""
+    echo -e "  ${BOLD}${CYAN}https://login.tailscale.com/admin/authkeys${NC}"
+    echo ""
+    warn "建议勾选 Reusable（可复用），方便多台服务器使用同一个 key"
+    echo ""
+    printf "  请粘贴 Auth Key（tskey-auth-xxx...）: "
+    read -r auth_key
+
+    if [ -z "$auth_key" ]; then
+        error "Auth Key 不能为空"; return
+    fi
+
+    echo ""
+    info "正在使用 Auth Key 连接..."
+    tailscale up --auth-key="$auth_key" $extra 2>&1 \
+        && info "已连接到 Tailscale 网络" \
+        || error "连接失败，请检查 Auth Key 是否有效"
 }
 
 _ts_down() {
