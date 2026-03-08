@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.0.3"
+SCRIPT_VERSION="2.0.4"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -664,21 +664,29 @@ _ts_login_url() {
     info "正在获取认证链接..."
     echo ""
 
-    # 后台启动登录流程，触发服务端生成 AuthURL
-    tailscale login >/dev/null 2>&1 &
-    local ts_pid=$!
+    local _get_auth_url
+    _get_auth_url() {
+        curl -s --unix-socket "$ts_sock" "$ts_api" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('AuthURL',''))" 2>/dev/null
+    }
 
-    # 轮询本地 API socket，等待 AuthURL 出现（最多 15 秒）
-    local auth_url="" i=0
-    while [ $i -lt 30 ]; do
-        sleep 0.5
-        auth_url=$(curl -s --unix-socket "$ts_sock" "$ts_api" 2>/dev/null \
-            | grep -o '"AuthURL":"[^"]*"' | cut -d'"' -f4)
-        [ -n "$auth_url" ] && break
-        i=$((i + 1))
-    done
+    # 先检查是否已有 AuthURL（上次登录流程留下的）
+    local auth_url
+    auth_url=$(_get_auth_url)
 
-    kill "$ts_pid" 2>/dev/null || true
+    # 没有的话，后台启动 tailscale login 触发生成，再轮询
+    if [ -z "$auth_url" ]; then
+        tailscale login >/dev/null 2>&1 &
+        local ts_pid=$!
+        local i=0
+        while [ $i -lt 30 ]; do
+            sleep 0.5
+            auth_url=$(_get_auth_url)
+            [ -n "$auth_url" ] && break
+            i=$((i + 1))
+        done
+        kill "$ts_pid" 2>/dev/null || true
+    fi
 
     if [ -n "$auth_url" ]; then
         echo -e "  请在浏览器中打开以下链接完成认证："
