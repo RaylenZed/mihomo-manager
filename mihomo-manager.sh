@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -114,7 +114,7 @@ main_menu() {
         divider
         echo -e "  ${BOLD}其他${NC}"
         divider
-        echo " 13. 脚本自更新  ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
+        echo -e " 13. 脚本自更新  ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
         echo " 14. 卸载 Mihomo"
         echo "  0. 退出"
         divider
@@ -631,14 +631,14 @@ _ts_up() {
     echo ""
 
     if ! tailscale status >/dev/null 2>&1; then
+        # 用 tailscale login 专门获取认证链接，避免 tailscale up 的设置冲突问题
+        # tailscale login 输出 URL 后退出，不受现有 flags 历史影响
         warn "尚未登录，正在获取认证链接..."
         echo ""
 
-        # tailscale up 在非交互终端会将 URL 写入 /dev/tty 而非 stdout/stderr
-        # 方案：后台运行 + 轮询临时文件提取 URL
         local ts_log
-        ts_log=$(mktemp /tmp/ts-up-XXXXXX.log)
-        tailscale up $extra >"$ts_log" 2>&1 &
+        ts_log=$(mktemp /tmp/ts-login-XXXXXX.log)
+        tailscale login >"$ts_log" 2>&1 &
         local ts_pid=$!
 
         local auth_url="" i=0
@@ -654,8 +654,9 @@ _ts_up() {
             echo ""
             echo -e "  ${BOLD}${CYAN}$auth_url${NC}"
             echo ""
-            warn "认证完成后连接将自动建立，请稍候..."
-            wait "$ts_pid" 2>/dev/null || true
+            warn "认证完成后按 Enter 继续连接..."
+            read -r
+            kill "$ts_pid" 2>/dev/null || true
         else
             warn "未能自动提取认证链接，原始输出如下："
             echo ""
@@ -664,6 +665,11 @@ _ts_up() {
         fi
 
         rm -f "$ts_log"
+
+        # 认证完成后执行 tailscale up 建立连接
+        echo ""
+        info "正在建立连接..."
+        tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败，请稍后重试"
     else
         tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败"
     fi
