@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.0.4"
+SCRIPT_VERSION="2.1.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -67,7 +67,11 @@ _status_bar() {
 
     command -v tailscale >/dev/null 2>&1 && ts="${GREEN}已安装${NC}" || ts="${DIM}未安装${NC}"
 
-    echo -e "  Mihomo: $svc  版本: ${CYAN}$ver${NC}  TUN: $tun  Tailscale: $ts"
+    local ipv6
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "0" ] \
+        && ipv6="${GREEN}已启用${NC}" || ipv6="${YELLOW}已禁用${NC}"
+
+    echo -e "  Mihomo: $svc  版本: ${CYAN}$ver${NC}  TUN: $tun  Tailscale: $ts  IPv6: $ipv6"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -114,6 +118,7 @@ main_menu() {
         divider
         echo -e "  ${BOLD}其他${NC}"
         divider
+        echo " 15. 系统网络设置（IPv6 管理）"
         echo -e " 13. 脚本自更新  ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
         echo " 14. 卸载 Mihomo"
         echo "  0. 退出"
@@ -137,6 +142,7 @@ main_menu() {
             12) menu_tailscale_compat ;;
             13) menu_self_update ;;
             14) menu_uninstall ;;
+            15) menu_network_settings ;;
             0)  clear; echo "  再见！"; exit 0 ;;
             *)  error "无效选项，请重新输入"; sleep 1 ;;
         esac
@@ -693,6 +699,9 @@ _ts_login_url() {
         echo ""
         echo -e "  ${BOLD}${CYAN}$auth_url${NC}"
         echo ""
+        echo -e "  ${DIM}提示：在登录页面可选择「Use a different sign-in method」${NC}"
+        echo -e "  ${DIM}→ 输入邮箱接收验证码，无需 Google/GitHub OAuth 跳转${NC}"
+        echo ""
         warn "认证完成后按 Enter 继续..."
         read -r
         echo ""
@@ -980,6 +989,123 @@ menu_self_update() {
         echo "  curl -Lo $SCRIPT_PATH $SCRIPT_RAW_URL && chmod +x $SCRIPT_PATH"
         pause
     fi
+}
+
+# ════════════════════════════════════════════════════════════
+#  系统网络设置
+# ════════════════════════════════════════════════════════════
+_ipv6_enabled() {
+    [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "0" ]
+}
+
+menu_network_settings() {
+    while true; do
+        clear
+        title "系统网络设置"
+
+        if _ipv6_enabled; then
+            echo -e "  IPv6 状态: ${GREEN}● 已启用${NC}"
+        else
+            echo -e "  IPv6 状态: ${YELLOW}● 已禁用${NC}"
+        fi
+
+        echo ""
+        echo "  1. 启用 IPv6"
+        echo "  2. 禁用 IPv6"
+        echo "  3. 查看当前 IPv6 地址"
+        echo "  0. 返回"
+        echo ""
+        printf "  请输入选项: "
+        read -r c
+        case "$c" in
+            1) _ipv6_enable ;;
+            2) _ipv6_disable ;;
+            3) _ipv6_show ;;
+            0) return ;;
+            *) error "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+_ipv6_enable() {
+    require_root || { pause; return; }
+    clear
+    title "启用 IPv6"
+
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null
+    info "IPv6 已立即启用"
+
+    # 写入持久化配置
+    local conf="/etc/sysctl.d/99-disable-ipv6.conf"
+    cat > "$conf" << 'EOF'
+net.ipv6.conf.all.disable_ipv6 = 0
+net.ipv6.conf.default.disable_ipv6 = 0
+net.ipv6.conf.lo.disable_ipv6 = 0
+EOF
+    info "持久化配置已写入 $conf（重启后仍生效）"
+
+    # 清理 sysctl.conf 中可能存在的冲突旧配置
+    if grep -q 'disable_ipv6' /etc/sysctl.conf 2>/dev/null; then
+        sed -i '/disable_ipv6/d' /etc/sysctl.conf
+        info "已清理 /etc/sysctl.conf 中的旧配置"
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}当前 IPv6 地址:${NC}"
+    ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print "    " $2}' \
+        || warn "暂无全局 IPv6 地址（需等待网卡从 ISP 获取）"
+    pause
+}
+
+_ipv6_disable() {
+    require_root || { pause; return; }
+    clear
+    title "禁用 IPv6"
+    warn "禁用后依赖 IPv6 的服务可能受影响"
+    ask "确定要禁用 IPv6 吗？" n || return
+    echo ""
+
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=1 >/dev/null
+    info "IPv6 已立即禁用"
+
+    # 写入持久化配置
+    local conf="/etc/sysctl.d/99-disable-ipv6.conf"
+    cat > "$conf" << 'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+    info "持久化配置已写入 $conf（重启后仍生效）"
+
+    # 清理 sysctl.conf 中可能存在的冲突旧配置
+    if grep -q 'disable_ipv6' /etc/sysctl.conf 2>/dev/null; then
+        sed -i '/disable_ipv6/d' /etc/sysctl.conf
+        info "已清理 /etc/sysctl.conf 中的旧配置"
+    fi
+
+    pause
+}
+
+_ipv6_show() {
+    clear
+    title "IPv6 地址信息"
+    if _ipv6_enabled; then
+        info "IPv6 状态: 已启用"
+    else
+        warn "IPv6 状态: 已禁用"
+    fi
+    echo ""
+    echo -e "  ${BOLD}各网卡 IPv6 地址:${NC}"
+    ip -6 addr show 2>/dev/null | grep -E '(^[0-9]+:|inet6)' | sed 's/^/  /' \
+        || warn "无 IPv6 地址信息"
+    echo ""
+    echo -e "  ${BOLD}IPv6 路由:${NC}"
+    ip -6 route show default 2>/dev/null | sed 's/^/  /' || warn "无 IPv6 默认路由"
+    pause
 }
 
 # ════════════════════════════════════════════════════════════
