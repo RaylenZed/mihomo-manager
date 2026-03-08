@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.2.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -432,6 +432,22 @@ _config_import() {
     [ -z "$src" ] && { error "路径不能为空"; pause; return; }
     [ ! -f "$src" ] && { error "文件不存在: $src"; pause; return; }
 
+    # YAML 语法校验
+    if python3 -c "import yaml" 2>/dev/null; then
+        if ! python3 -c "import yaml,sys; yaml.safe_load(sys.stdin)" < "$src" 2>/dev/null; then
+            error "YAML 语法错误，请检查配置文件后重新导入"
+            pause; return
+        fi
+        info "YAML 语法检查通过"
+    fi
+
+    # 备份旧配置
+    if [ -f "$CONFIG_FILE" ]; then
+        local bak="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$CONFIG_FILE" "$bak"
+        info "旧配置已备份至 $bak"
+    fi
+
     cp "$src" "$CONFIG_FILE"
     info "配置已导入到 $CONFIG_FILE"
 
@@ -503,39 +519,141 @@ menu_update() {
 menu_test() {
     clear
     title "网络连通性测试"
+
     local port
     port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
 
-    _test() {
-        local name="$1" url="$2" proxy="$3"
-        printf "  %-30s" "$name"
-        local code
-        if [ -n "$proxy" ]; then
-            code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" --proxy "$proxy" "$url" 2>/dev/null)
-        else
-            code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
+    local tmp
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp'" RETURN
+
+    echo -e "  ${DIM}并行检测中，请稍候（最长约 15 秒）...${NC}"
+    echo ""
+
+    # ── 后台测试工作函数 ──────────────────────────────────────
+    # 用法: _bg_test <id> <url> [trace_url]
+    # 若提供 trace_url，则请求 trace_url（Cloudflare cdn-cgi/trace），
+    # 同时从响应体提取出口 IP。
+    # 结果写入 $tmp/<id>，格式: "CODE|ELAPSED|IP"
+    _bg_test() {
+        local id="$1" url="$2" trace_url="${3:-}"
+        local fetch_url="${trace_url:-$url}"
+        local tmpbody code elapsed ip=""
+        tmpbody=$(mktemp)
+        read -r code elapsed < <(
+            curl -s --max-time 12 -o "$tmpbody" \
+                 -w "%{http_code} %{time_total}" "$fetch_url" 2>/dev/null
+        )
+        if [ -n "$trace_url" ]; then
+            ip=$(grep '^ip=' "$tmpbody" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
         fi
-        if [ "$code" -ge 200 ] && [ "$code" -lt 400 ] 2>/dev/null; then
-            echo -e "${GREEN}✓  $code${NC}"
+        printf "%s|%s|%s" "${code:-0}" "${elapsed:-0}" "$ip" > "$tmp/$id"
+        rm -f "$tmpbody"
+    }
+
+    # ── 启动所有并行任务 ──────────────────────────────────────
+    # 出口 IP 检测（TUN 直连 & HTTP 代理）
+    curl -s --max-time 8 "https://api.ipify.org"  \
+        > "$tmp/egress_tun"   2>/dev/null &
+    curl -s --max-time 8 --proxy "http://127.0.0.1:$port" "https://api.ipify.org" \
+        > "$tmp/egress_proxy" 2>/dev/null &
+
+    # 常用网站
+    _bg_test "google"      "https://www.google.com"          &
+    _bg_test "youtube"     "https://www.youtube.com"         &
+    _bg_test "github"      "https://github.com"              &
+    _bg_test "twitter"     "https://twitter.com"             &
+    _bg_test "discord"     "https://discord.com"             &
+    _bg_test "netflix"     "https://www.netflix.com"         &
+    _bg_test "spotify"     "https://www.spotify.com"         &
+    _bg_test "wikipedia"   "https://www.wikipedia.org"       &
+    _bg_test "baidu"       "https://www.baidu.com"           &
+
+    # AI 服务（Claude/ChatGPT 通过 cdn-cgi/trace 同时获取出口 IP）
+    _bg_test "claude"      "https://claude.ai" \
+             "https://claude.ai/cdn-cgi/trace"                &
+    _bg_test "chatgpt"     "https://chatgpt.com" \
+             "https://chatgpt.com/cdn-cgi/trace"              &
+    _bg_test "openai_api"  "https://api.openai.com"          &
+    _bg_test "gemini"      "https://gemini.google.com"       &
+    _bg_test "perplexity"  "https://www.perplexity.ai"       &
+
+    wait  # 等待所有后台任务完成
+
+    # ── 结果显示函数 ──────────────────────────────────────────
+    _show_result() {
+        local name="$1" id="$2"
+        local result code elapsed ip time_str
+        result=$(cat "$tmp/$id" 2>/dev/null || echo "0|0|")
+        code="${result%%|*}"
+        elapsed=$(echo "$result" | cut -d'|' -f2)
+        ip=$(echo "$result" | cut -d'|' -f3)
+        time_str=$(awk "BEGIN{t=${elapsed:-0}+0; \
+            if(t<=0) print \"  --  \"; \
+            else if(t<1) printf \"%5.0fms\",t*1000; \
+            else printf \"%5.1fs\",t}" 2>/dev/null)
+
+        printf "  %-26s" "$name"
+        local c="${code:-0}"
+        if [ "$c" -ge 200 ] && [ "$c" -lt 400 ] 2>/dev/null; then
+            if [ -n "$ip" ]; then
+                printf "${GREEN}✓ %-3s${NC}  ${DIM}%s  出口: %s${NC}\n" \
+                    "$c" "$time_str" "$ip"
+            else
+                printf "${GREEN}✓ %-3s${NC}  ${DIM}%s${NC}\n" "$c" "$time_str"
+            fi
+        elif [ "$c" -ge 400 ] 2>/dev/null; then
+            printf "${YELLOW}~ %-3s${NC}  ${DIM}%s  (可达，HTTP %s)${NC}\n" \
+                "$c" "$time_str" "$c"
         else
-            echo -e "${RED}✗  $code${NC}"
+            printf "${RED}✗ 超时/不可达${NC}\n"
         fi
     }
 
-    echo -e "  ${BOLD}[ TUN 透明代理 ]${NC}"
-    echo ""
-    _test "Google"       "https://www.google.com"
-    _test "YouTube"      "https://www.youtube.com"
-    _test "GitHub"       "https://github.com"
-    _test "Twitter / X"  "https://twitter.com"
-    _test "Baidu"        "https://www.baidu.com"
+    # ── 输出结果 ──────────────────────────────────────────────
+    local egress_tun egress_proxy
+    egress_tun=$(cat "$tmp/egress_tun" 2>/dev/null)
+    egress_proxy=$(cat "$tmp/egress_proxy" 2>/dev/null)
+
+    if [ -n "$egress_tun" ]; then
+        echo -e "  TUN  出口 IP : ${BOLD}${CYAN}$egress_tun${NC}"
+    else
+        echo -e "  TUN  出口 IP : ${DIM}获取失败（TUN 未启用？）${NC}"
+    fi
+    if [ -n "$egress_proxy" ]; then
+        echo -e "  代理 出口 IP : ${BOLD}${CYAN}$egress_proxy${NC}"
+    else
+        echo -e "  代理 出口 IP : ${DIM}获取失败（Mihomo 未运行？）${NC}"
+    fi
+
     echo ""
     divider
     echo ""
-    echo -e "  ${BOLD}[ HTTP 代理 端口 $port ]${NC}"
+    echo -e "  ${BOLD}[ 常用网站 ]${NC}"
     echo ""
-    _test "Google  (via proxy)"  "https://www.google.com"  "http://127.0.0.1:$port"
-    _test "Baidu   (via proxy)"  "https://www.baidu.com"   "http://127.0.0.1:$port"
+    _show_result "Google"        "google"
+    _show_result "YouTube"       "youtube"
+    _show_result "GitHub"        "github"
+    _show_result "Twitter / X"   "twitter"
+    _show_result "Discord"       "discord"
+    _show_result "Netflix"       "netflix"
+    _show_result "Spotify"       "spotify"
+    _show_result "Wikipedia"     "wikipedia"
+    _show_result "Baidu"         "baidu"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${BOLD}[ AI 服务 ]${NC}"
+    echo ""
+    _show_result "Claude (claude.ai)"    "claude"
+    _show_result "ChatGPT"               "chatgpt"
+    _show_result "OpenAI API"            "openai_api"
+    _show_result "Gemini"                "gemini"
+    _show_result "Perplexity"            "perplexity"
+    echo ""
+    echo -e "  ${DIM}✓=正常  ~=可达(需认证)  ✗=超时/不可达${NC}"
+    echo -e "  ${DIM}出口 IP 仅 Cloudflare 站点(Claude/ChatGPT)支持逐站显示${NC}"
     pause
 }
 
