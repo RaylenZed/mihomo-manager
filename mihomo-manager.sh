@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.2.1"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -578,6 +578,7 @@ menu_test() {
     _bg_test "openai_api"  "https://api.openai.com"          &
     _bg_test "gemini"      "https://gemini.google.com"       &
     _bg_test "perplexity"  "https://www.perplexity.ai"       &
+    _bg_test "telegram"    "https://telegram.org"            &
 
     wait  # 等待所有后台任务完成
 
@@ -651,6 +652,7 @@ menu_test() {
     _show_result "OpenAI API"            "openai_api"
     _show_result "Gemini"                "gemini"
     _show_result "Perplexity"            "perplexity"
+    _show_result "Telegram"              "telegram"
     echo ""
     echo -e "  ${DIM}✓=正常  ~=可达(需认证)  ✗=超时/不可达${NC}"
     echo -e "  ${DIM}出口 IP 仅 Cloudflare 站点(Claude/ChatGPT)支持逐站显示${NC}"
