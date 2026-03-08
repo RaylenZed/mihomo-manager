@@ -11,7 +11,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="1.1.3"
+SCRIPT_VERSION="1.1.4"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -752,10 +752,42 @@ _ts_up() {
 
     # 检查是否已登录
     if ! tailscale status >/dev/null 2>&1; then
-        warn "尚未登录，请复制下方链接到浏览器完成认证："
+        warn "尚未登录，正在获取认证链接..."
         echo ""
-        # 直接输出所有内容（stdout + stderr），确保认证 URL 可见
-        tailscale up $EXTRA_ARGS 2>&1
+
+        # tailscale up 会写入 /dev/tty 而非 stdout/stderr，2>&1 无法捕获
+        # 方案：后台运行并写入临时文件，主动轮询提取 URL
+        local TS_LOG
+        TS_LOG=$(mktemp /tmp/ts-up-XXXXXX.log)
+        tailscale up $EXTRA_ARGS >"$TS_LOG" 2>&1 &
+        local TS_PID=$!
+
+        # 轮询最多 15 秒，等待 URL 出现
+        local AUTH_URL=""
+        local i=0
+        while [ $i -lt 30 ]; do
+            sleep 0.5
+            AUTH_URL=$(grep -o 'https://login\.tailscale\.com/[^ ]*' "$TS_LOG" 2>/dev/null | head -1)
+            [ -n "$AUTH_URL" ] && break
+            i=$((i + 1))
+        done
+
+        if [ -n "$AUTH_URL" ]; then
+            echo -e "  请在浏览器中打开以下链接完成认证："
+            echo ""
+            echo -e "  ${BOLD}${CYAN}$AUTH_URL${NC}"
+            echo ""
+            warn "认证完成后连接将自动建立，请稍候..."
+            wait "$TS_PID" 2>/dev/null || true
+        else
+            # URL 没捕获到，把原始输出全显示出来
+            warn "未能自动提取认证链接，原始输出如下："
+            echo ""
+            cat "$TS_LOG"
+            wait "$TS_PID" 2>/dev/null || true
+        fi
+
+        rm -f "$TS_LOG"
     else
         tailscale up $EXTRA_ARGS 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败"
     fi
