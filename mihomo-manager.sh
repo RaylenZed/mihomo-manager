@@ -68,8 +68,11 @@ main_menu() {
             TS_LABEL="Tailscale 兼容  [未启用]"
         fi
 
+        local TS_INSTALLED
+        command -v tailscale >/dev/null 2>&1 && TS_INSTALLED="已安装" || TS_INSTALLED="未安装"
+
         CHOICE=$(whiptail --title "Mihomo Manager" \
-            --menu "$STATUS\n\n请选择操作：" 24 65 13 \
+            --menu "$STATUS\n\n请选择操作：" 26 65 14 \
             "1" "查看状态" \
             "2" "启动服务" \
             "3" "停止服务" \
@@ -83,7 +86,8 @@ main_menu() {
             "11" "网络连通性测试" \
             "12" "查看日志" \
             "13" "─────────────────────" \
-            "15" "$TS_LABEL" \
+            "15" "Tailscale 管理  [$TS_INSTALLED]" \
+            "16" "$TS_LABEL" \
             "14" "卸载 Mihomo" \
             "0" "退出" \
             3>&1 1>&2 2>&3) || break
@@ -100,7 +104,8 @@ main_menu() {
             9)  menu_update ;;
             11) menu_test ;;
             12) menu_log ;;
-            15) menu_tailscale ;;
+            15) menu_tailscale_manage ;;
+            16) menu_tailscale ;;
             14) menu_uninstall ;;
             0)  clear; exit 0 ;;
         esac
@@ -638,6 +643,208 @@ _tailscale_info() {
   • dns.fake-ip-filter: *.ts.net
   • rules: 100.64.0.0/10 → DIRECT
   • rules: tailscaled 进程 → DIRECT" 22 58
+}
+
+# ── Tailscale 管理 ───────────────────────────────────────────
+menu_tailscale_manage() {
+    while true; do
+        local ts_svc ts_conn ts_ip summary
+
+        if command -v tailscale >/dev/null 2>&1; then
+            if systemctl is-active tailscaled >/dev/null 2>&1; then
+                ts_svc="运行中 ●"
+            else
+                ts_svc="已停止 ○"
+            fi
+            ts_ip=$(tailscale ip 2>/dev/null | head -1 || echo "未连接")
+            if tailscale status >/dev/null 2>&1; then
+                ts_conn="已连接"
+            else
+                ts_conn="未连接"
+            fi
+            summary="状态: $ts_svc  |  网络: $ts_conn  |  IP: $ts_ip"
+        else
+            summary="Tailscale 未安装"
+        fi
+
+        CHOICE=$(whiptail --title "Tailscale 管理" \
+            --menu "$summary\n\n请选择操作：" 22 62 10 \
+            "1" "查看状态与设备列表" \
+            "2" "连接 Tailscale 网络" \
+            "3" "断开 Tailscale 网络" \
+            "4" "重启 tailscaled 服务" \
+            "5" "─────────────────────" \
+            "6" "安装 Tailscale" \
+            "7" "卸载 Tailscale" \
+            "0" "返回主菜单" \
+            3>&1 1>&2 2>&3) || return
+
+        case "$CHOICE" in
+            1) _ts_status ;;
+            2) _ts_up ;;
+            3) _ts_down ;;
+            4) _ts_restart ;;
+            5) : ;;
+            6) _ts_install ;;
+            7) _ts_uninstall ;;
+            0) return ;;
+        esac
+    done
+}
+
+_ts_check() {
+    if ! command -v tailscale >/dev/null 2>&1; then
+        whiptail --title "未安装" --msgbox "Tailscale 未安装。\n请先选择「安装 Tailscale」。" 8 45
+        return 1
+    fi
+}
+
+_ts_status() {
+    _ts_check || return
+    clear
+    section "Tailscale 状态"
+
+    # 服务状态
+    if systemctl is-active tailscaled >/dev/null 2>&1; then
+        echo -e "  服务状态:  ${GREEN}● 运行中${NC}"
+    else
+        echo -e "  服务状态:  ${RED}● 已停止${NC}"
+    fi
+
+    # 本机 IP
+    local ts_ip
+    ts_ip=$(tailscale ip 2>/dev/null | head -1 || echo "未获取")
+    echo -e "  本机 IP:   ${CYAN}$ts_ip${NC}"
+
+    # 网络连接状态
+    echo ""
+    echo -e "  ${BOLD}网络状态:${NC}"
+    tailscale status 2>/dev/null || warn "未连接到 Tailscale 网络"
+
+    pause
+}
+
+_ts_up() {
+    _ts_check || return
+    require_root || return
+
+    # 询问是否需要 --accept-routes（子网路由）
+    local EXTRA_ARGS=""
+    if whiptail --title "连接选项" --yesno "是否接受其他节点共享的子网路由？\n（如果不确定，选否即可）" 9 55 3>&1 1>&2 2>&3; then
+        EXTRA_ARGS="--accept-routes"
+    fi
+
+    clear
+    section "连接 Tailscale 网络"
+
+    # 检查是否已登录
+    if ! tailscale status >/dev/null 2>&1; then
+        warn "尚未登录，将打开认证链接..."
+        echo ""
+        echo "  请在浏览器中打开以下链接完成认证："
+        echo ""
+        tailscale up $EXTRA_ARGS 2>&1 | grep -E 'https://|To authenticate' || tailscale up $EXTRA_ARGS
+    else
+        tailscale up $EXTRA_ARGS && info "已连接到 Tailscale 网络" || error "连接失败"
+    fi
+
+    echo ""
+    local ts_ip
+    ts_ip=$(tailscale ip 2>/dev/null | head -1 || echo "未获取")
+    [ -n "$ts_ip" ] && info "本机 Tailscale IP: $ts_ip"
+
+    pause
+}
+
+_ts_down() {
+    _ts_check || return
+    require_root || return
+
+    if whiptail --title "确认断开" --yesno "确定要断开 Tailscale 网络连接吗？\n（tailscaled 服务仍会保持运行）" 9 55 3>&1 1>&2 2>&3; then
+        clear
+        section "断开 Tailscale 网络"
+        tailscale down && info "已断开 Tailscale 网络" || error "断开失败"
+        pause
+    fi
+}
+
+_ts_restart() {
+    require_root || return
+    _ts_check || return
+    clear
+    section "重启 tailscaled 服务"
+    systemctl restart tailscaled && info "tailscaled 已重启" || error "重启失败"
+    sleep 1
+    systemctl status tailscaled --no-pager | tail -5
+    pause
+}
+
+_ts_install() {
+    require_root || return
+    if command -v tailscale >/dev/null 2>&1; then
+        local ver
+        ver=$(tailscale version 2>/dev/null | head -1)
+        whiptail --title "已安装" --msgbox "Tailscale 已安装：$ver" 8 45
+        return
+    fi
+
+    clear
+    section "安装 Tailscale"
+    info "正在下载并运行官方安装脚本..."
+    echo ""
+    if curl -fsSL https://tailscale.com/install.sh | sh; then
+        echo ""
+        info "Tailscale 安装成功！"
+        echo ""
+        info "版本: $(tailscale version 2>/dev/null | head -1)"
+        echo ""
+        warn "下一步：运行「连接 Tailscale 网络」完成认证登录"
+
+        # 如果 Mihomo 兼容未启用，提示开启
+        if ! _tailscale_enabled; then
+            echo ""
+            warn "检测到 Mihomo 兼容模式未启用"
+            warn "建议返回主菜单开启「Tailscale 兼容」，避免与 Mihomo 冲突"
+        fi
+    else
+        error "安装失败，请检查网络连接"
+        echo ""
+        warn "如果无法访问 tailscale.com，可在本机执行后手动安装 .deb 包"
+    fi
+    pause
+}
+
+_ts_uninstall() {
+    require_root || return
+    _ts_check || return
+
+    if ! whiptail --title "确认卸载" --yesno "确定要卸载 Tailscale 吗？\n此操作将删除 tailscale 和 tailscaled。" 9 52 3>&1 1>&2 2>&3; then
+        return
+    fi
+
+    clear
+    section "卸载 Tailscale"
+    tailscale down 2>/dev/null || true
+    systemctl stop tailscaled 2>/dev/null || true
+
+    if command -v apt >/dev/null 2>&1; then
+        apt-get remove -y tailscale && info "已通过 apt 卸载 Tailscale"
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y tailscale && info "已通过 yum 卸载 Tailscale"
+    else
+        rm -f /usr/bin/tailscale /usr/sbin/tailscaled
+        rm -f /etc/systemd/system/tailscaled.service
+        systemctl daemon-reload
+        info "已手动删除 Tailscale 文件"
+    fi
+
+    # 如果 Mihomo 兼容已启用，提示可关闭
+    if _tailscale_enabled; then
+        echo ""
+        warn "Tailscale 已卸载，建议返回主菜单关闭「Tailscale 兼容」模式"
+    fi
+
+    pause
 }
 
 # ── 卸载 ─────────────────────────────────────────────────────
