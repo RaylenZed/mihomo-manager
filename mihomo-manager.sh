@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.0.2"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -631,42 +631,45 @@ _ts_up() {
     echo ""
 
     if ! tailscale status >/dev/null 2>&1; then
-        # 用 tailscale login 专门获取认证链接，避免 tailscale up 的设置冲突问题
-        # tailscale login 输出 URL 后退出，不受现有 flags 历史影响
-        warn "尚未登录，正在获取认证链接..."
+        # tailscale login/up 直接写入 /dev/tty，shell 无法重定向捕获
+        # 正确方案：后台启动登录流程，轮询本地 API socket 获取 AuthURL
+        warn "尚未登录，正在启动认证流程..."
         echo ""
 
-        local ts_log
-        ts_log=$(mktemp /tmp/ts-login-XXXXXX.log)
-        tailscale login >"$ts_log" 2>&1 &
+        local ts_sock="/var/run/tailscale/tailscaled.sock"
+        local ts_api="http://local-tailscaled.sock/localapi/v0/status"
+
+        # 后台启动登录，触发服务端生成认证链接
+        tailscale login >/dev/null 2>&1 &
         local ts_pid=$!
 
+        # 轮询本地 API，等待 AuthURL 出现（最多 15 秒）
         local auth_url="" i=0
         while [ $i -lt 30 ]; do
             sleep 0.5
-            auth_url=$(grep -o 'https://login\.tailscale\.com/[^ ]*' "$ts_log" 2>/dev/null | head -1)
+            auth_url=$(curl -s --unix-socket "$ts_sock" "$ts_api" 2>/dev/null \
+                | grep -o '"AuthURL":"[^"]*"' | cut -d'"' -f4)
             [ -n "$auth_url" ] && break
             i=$((i + 1))
         done
+
+        kill "$ts_pid" 2>/dev/null || true
 
         if [ -n "$auth_url" ]; then
             echo -e "  请在浏览器中打开以下链接完成认证："
             echo ""
             echo -e "  ${BOLD}${CYAN}$auth_url${NC}"
             echo ""
-            warn "认证完成后按 Enter 继续连接..."
+            warn "认证完成后按 Enter 继续..."
             read -r
-            kill "$ts_pid" 2>/dev/null || true
         else
-            warn "未能自动提取认证链接，原始输出如下："
+            error "未能获取认证链接，请检查 tailscaled 服务是否正常运行"
             echo ""
-            cat "$ts_log"
-            wait "$ts_pid" 2>/dev/null || true
+            warn "可手动执行：tailscale login"
+            pause; return
         fi
 
-        rm -f "$ts_log"
-
-        # 认证完成后执行 tailscale up 建立连接
+        # 认证完成后建立连接
         echo ""
         info "正在建立连接..."
         tailscale up $extra 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败，请稍后重试"
