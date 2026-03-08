@@ -11,7 +11,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -746,13 +746,12 @@ _ts_up() {
 
     # 检查是否已登录
     if ! tailscale status >/dev/null 2>&1; then
-        warn "尚未登录，将打开认证链接..."
+        warn "尚未登录，请复制下方链接到浏览器完成认证："
         echo ""
-        echo "  请在浏览器中打开以下链接完成认证："
-        echo ""
-        tailscale up $EXTRA_ARGS 2>&1 | grep -E 'https://|To authenticate' || tailscale up $EXTRA_ARGS
+        # 直接输出所有内容（stdout + stderr），确保认证 URL 可见
+        tailscale up $EXTRA_ARGS 2>&1
     else
-        tailscale up $EXTRA_ARGS && info "已连接到 Tailscale 网络" || error "连接失败"
+        tailscale up $EXTRA_ARGS 2>&1 && info "已连接到 Tailscale 网络" || error "连接失败"
     fi
 
     echo ""
