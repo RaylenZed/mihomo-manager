@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.2.1"
+SCRIPT_VERSION="2.3.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -119,6 +119,7 @@ main_menu() {
         echo -e "  ${BOLD}其他${NC}"
         divider
         echo " 15. 系统网络设置（IPv6 管理）"
+        echo " 16. Docker 代理设置"
         echo -e " 13. 脚本自更新  ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
         echo " 14. 卸载 Mihomo"
         echo "  0. 退出"
@@ -143,6 +144,7 @@ main_menu() {
             13) menu_self_update ;;
             14) menu_uninstall ;;
             15) menu_network_settings ;;
+            16) menu_docker_proxy ;;
             0)  clear; echo "  再见！"; exit 0 ;;
             *)  error "无效选项，请重新输入"; sleep 1 ;;
         esac
@@ -1225,6 +1227,241 @@ _ipv6_show() {
     echo ""
     echo -e "  ${BOLD}IPv6 路由:${NC}"
     ip -6 route show default 2>/dev/null | sed 's/^/  /' || warn "无 IPv6 默认路由"
+    pause
+}
+
+# ════════════════════════════════════════════════════════════
+#  Docker 代理设置
+# ════════════════════════════════════════════════════════════
+DOCKER_PROXY_CONF="/etc/systemd/system/docker.service.d/proxy.conf"
+
+_docker_proxy_enabled() {
+    [ -f "$DOCKER_PROXY_CONF" ] && grep -q 'HTTP_PROXY' "$DOCKER_PROXY_CONF" 2>/dev/null
+}
+
+menu_docker_proxy() {
+    while true; do
+        clear
+        title "Docker 代理设置"
+
+        if ! command -v docker >/dev/null 2>&1; then
+            warn "Docker 未安装"
+            echo ""
+            echo "  0. 返回"
+            echo ""
+            printf "  请输入选项: "
+            read -r _c; return
+        fi
+
+        local port
+        port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
+
+        if _docker_proxy_enabled; then
+            echo -e "  Docker daemon 代理: ${GREEN}● 已启用${NC}"
+            local cur
+            cur=$(grep 'HTTPS_PROXY' "$DOCKER_PROXY_CONF" 2>/dev/null | grep -o 'http[^"]*' | head -1)
+            [ -n "$cur" ] && echo -e "  代理地址: ${CYAN}$cur${NC}"
+        else
+            echo -e "  Docker daemon 代理: ${YELLOW}● 未配置${NC}"
+        fi
+
+        echo ""
+        echo "  说明: 配置后 Docker daemon 拉取镜像走代理"
+        echo -e "  ${DIM}容器内应用另需 -e HTTP_PROXY=http://172.17.0.1:${port}${NC}"
+        echo ""
+        echo "  1. 启用 Docker daemon 代理"
+        echo "  2. 禁用 Docker daemon 代理"
+        echo "  3. 测试 Docker 容器网络"
+        echo "  0. 返回"
+        echo ""
+        printf "  请输入选项: "
+        read -r c
+        case "$c" in
+            1) _docker_proxy_enable ;;
+            2) _docker_proxy_disable ;;
+            3) _docker_proxy_test ;;
+            0) return ;;
+            *) error "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+_docker_proxy_enable() {
+    require_root || { pause; return; }
+    clear
+    title "启用 Docker daemon 代理"
+
+    local port
+    port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
+
+    mkdir -p /etc/systemd/system/docker.service.d
+    cat > "$DOCKER_PROXY_CONF" << EOF
+[Service]
+Environment="HTTP_PROXY=http://127.0.0.1:${port}"
+Environment="HTTPS_PROXY=http://127.0.0.1:${port}"
+Environment="NO_PROXY=localhost,127.0.0.1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+EOF
+    info "代理配置已写入 $DOCKER_PROXY_CONF"
+    systemctl daemon-reload
+
+    if systemctl is-active docker >/dev/null 2>&1; then
+        if ask "是否立即重启 Docker daemon 使配置生效？" y; then
+            systemctl restart docker && info "Docker daemon 已重启，代理生效" || error "重启失败"
+        else
+            warn "下次重启 Docker daemon 后生效"
+        fi
+    else
+        warn "Docker daemon 未运行，启动后自动生效"
+    fi
+
+    echo ""
+    warn "注意：容器内应用还需传入代理环境变量才能走代理："
+    echo -e "  ${CYAN}docker run -e HTTP_PROXY=http://172.17.0.1:${port} -e HTTPS_PROXY=http://172.17.0.1:${port} ...${NC}"
+    pause
+}
+
+_docker_proxy_disable() {
+    require_root || { pause; return; }
+    clear
+    title "禁用 Docker daemon 代理"
+    ask "确定要移除 Docker daemon 代理配置吗？" n || return
+
+    rm -f "$DOCKER_PROXY_CONF"
+    rmdir /etc/systemd/system/docker.service.d 2>/dev/null || true
+    systemctl daemon-reload
+
+    if systemctl is-active docker >/dev/null 2>&1; then
+        systemctl restart docker && info "Docker daemon 已重启，代理已移除" || error "重启失败"
+    else
+        info "配置已移除，下次启动 Docker 后生效"
+    fi
+    pause
+}
+
+_docker_proxy_test() {
+    clear
+    title "Docker 容器网络测试"
+
+    if ! command -v docker >/dev/null 2>&1; then
+        error "Docker 未安装"; pause; return
+    fi
+    if ! systemctl is-active docker >/dev/null 2>&1; then
+        error "Docker daemon 未运行"; pause; return
+    fi
+
+    local port img="alpine"
+    port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
+
+    # 确保测试镜像就绪
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+        echo -e "  ${DIM}本地无 $img 镜像，尝试拉取（需要网络）...${NC}"
+        if ! docker pull "$img" -q 2>/dev/null; then
+            error "拉取 $img 失败"
+            warn "请先启用 Docker daemon 代理（选项1）后重试，或手动执行: docker pull $img"
+            pause; return
+        fi
+    fi
+    info "测试镜像就绪: $img"
+    echo ""
+    echo -e "  ${DIM}并行启动容器测试中，请稍候（最长约 20 秒）...${NC}"
+    echo ""
+
+    local tmp
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp'" RETURN
+
+    local pe="HTTP_PROXY=http://172.17.0.1:${port}"
+    local pse="HTTPS_PROXY=http://172.17.0.1:${port}"
+
+    # ── TUN 透明代理（不设代理环境变量）──────────────────────
+    docker run --rm "$img" wget -qO- --timeout=10 \
+        "https://api.ipify.org" > "$tmp/tun_ip" 2>/dev/null &
+
+    ( docker run --rm "$img" \
+        wget -qO /dev/null --timeout=12 "https://www.google.com" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/tun_google" &
+
+    ( docker run --rm "$img" \
+        wget -qO /dev/null --timeout=12 "https://telegram.org" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/tun_tg" &
+
+    ( docker run --rm "$img" \
+        wget -qO /dev/null --timeout=12 "https://claude.ai" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/tun_claude" &
+
+    # ── 显式 HTTP 代理环境变量 ────────────────────────────────
+    docker run --rm -e "$pe" -e "$pse" "$img" \
+        wget -qO- --timeout=10 "https://api.ipify.org" > "$tmp/prx_ip" 2>/dev/null &
+
+    ( docker run --rm -e "$pe" -e "$pse" "$img" \
+        wget -qO /dev/null --timeout=12 "https://www.google.com" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/prx_google" &
+
+    ( docker run --rm -e "$pe" -e "$pse" "$img" \
+        wget -qO /dev/null --timeout=12 "https://telegram.org" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/prx_tg" &
+
+    ( docker run --rm -e "$pe" -e "$pse" "$img" \
+        wget -qO /dev/null --timeout=12 "https://claude.ai" 2>/dev/null \
+        && echo "OK" || echo "FAIL" ) > "$tmp/prx_claude" &
+
+    wait
+
+    # ── 显示结果 ──────────────────────────────────────────────
+    _dshow() {
+        local name="$1" file="$2"
+        local val
+        val=$(cat "$tmp/$file" 2>/dev/null)
+        printf "  %-22s" "$name"
+        case "$val" in
+            OK)   echo -e "${GREEN}✓ 可达${NC}" ;;
+            FAIL) echo -e "${RED}✗ 不可达${NC}" ;;
+            "")   echo -e "${RED}✗ 超时${NC}" ;;
+            *)    echo -e "${GREEN}✓${NC}  ${CYAN}$val${NC}" ;;  # IP address
+        esac
+    }
+
+    local tun_ip prx_ip
+    tun_ip=$(cat "$tmp/tun_ip" 2>/dev/null)
+    prx_ip=$(cat "$tmp/prx_ip" 2>/dev/null)
+
+    echo -e "  ${BOLD}[ TUN 透明代理（不设环境变量）]${NC}"
+    echo ""
+    printf "  %-22s" "出口 IP"
+    [ -n "$tun_ip" ] \
+        && echo -e "${GREEN}✓${NC}  ${CYAN}$tun_ip${NC}" \
+        || echo -e "${RED}✗ 获取失败（TUN 未覆盖容器流量）${NC}"
+    _dshow "Google"   "tun_google"
+    _dshow "Telegram" "tun_tg"
+    _dshow "Claude"   "tun_claude"
+
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${BOLD}[ 显式 HTTP 代理 (172.17.0.1:${port}) ]${NC}"
+    echo ""
+    printf "  %-22s" "出口 IP"
+    [ -n "$prx_ip" ] \
+        && echo -e "${GREEN}✓${NC}  ${CYAN}$prx_ip${NC}" \
+        || echo -e "${RED}✗ 获取失败（Mihomo 未运行或端口不通）${NC}"
+    _dshow "Google"   "prx_google"
+    _dshow "Telegram" "prx_tg"
+    _dshow "Claude"   "prx_claude"
+
+    echo ""
+    # 结论提示
+    if [ -z "$tun_ip" ] && [ -n "$prx_ip" ]; then
+        warn "TUN 未覆盖容器，建议容器启动时加 -e HTTP_PROXY / -e HTTPS_PROXY"
+    elif [ -n "$tun_ip" ] && [ -z "$prx_ip" ]; then
+        warn "TUN 透明代理可用，但显式代理不通（检查 Mihomo 是否监听 0.0.0.0:${port}）"
+    elif [ -n "$tun_ip" ] && [ -n "$prx_ip" ]; then
+        info "两种方式均可用"
+        [ "$tun_ip" = "$prx_ip" ] && info "出口 IP 一致，均通过同一代理节点" \
+                                   || warn "出口 IP 不同，路由策略可能有差异"
+    else
+        error "两种方式均失败，请检查 Mihomo 是否正常运行"
+    fi
     pause
 }
 
