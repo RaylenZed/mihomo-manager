@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.3.1"
+SCRIPT_VERSION="2.4.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -389,6 +389,9 @@ menu_config() {
         echo "  1. 查看当前配置摘要"
         echo "  2. 从路径导入配置文件"
         echo "  3. 查看目录结构说明"
+        echo "  4. 编辑配置文件"
+        echo "  5. 更新 GeoIP/GeoSite 数据库"
+        echo "  6. 添加域名直连/代理规则"
         echo "  0. 返回主菜单"
         echo ""
         printf "  请输入选项: "
@@ -397,6 +400,9 @@ menu_config() {
             1) _config_show ;;
             2) _config_import ;;
             3) _config_tree ;;
+            4) _config_edit ;;
+            5) _config_update_geodata ;;
+            6) _config_add_rule ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
@@ -483,6 +489,173 @@ _config_tree() {
     ctrl=$(grep 'external-controller' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
     [ -n "$ctrl" ] && echo "  ${CYAN}http://服务器IP:$(echo "$ctrl" | cut -d: -f2)${NC}" \
                    || echo "  ${DIM}（配置文件中未设置 external-controller）${NC}"
+    pause
+}
+
+_config_edit() {
+    require_root || { pause; return; }
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "配置文件不存在: $CONFIG_FILE"
+        pause; return
+    fi
+    local editor
+    if command -v nano >/dev/null 2>&1; then
+        editor=nano
+    elif command -v vi >/dev/null 2>&1; then
+        editor=vi
+    else
+        error "未找到可用编辑器（nano/vi）"
+        pause; return
+    fi
+    info "使用 ${editor} 打开配置文件..."
+    sleep 1
+    $editor "$CONFIG_FILE"
+    echo ""
+    if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        if ask "是否重启服务以应用更改？" y; then
+            systemctl restart "$SERVICE_NAME" && info "服务已重启" || error "重启失败"
+            pause
+        fi
+    fi
+}
+
+_config_update_geodata() {
+    require_root || { pause; return; }
+    clear
+    title "更新 GeoIP/GeoSite 数据库"
+
+    local geoip_url="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/country.mmdb"
+    local asn_url="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/ASN.mmdb"
+    local geosite_url="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat"
+
+    local dl_tool
+    if command -v curl >/dev/null 2>&1; then
+        dl_tool="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        dl_tool="wget"
+    else
+        error "未找到 curl 或 wget"
+        pause; return
+    fi
+
+    _dl_file() {
+        local url="$1" dest="$2" name="$3"
+        info "正在下载 ${name}..."
+        if [ "$dl_tool" = "curl" ]; then
+            curl -fsSL --connect-timeout 15 -o "$dest.tmp" "$url"
+        else
+            wget -q --timeout=15 -O "$dest.tmp" "$url"
+        fi
+        if [ $? -eq 0 ] && [ -s "$dest.tmp" ]; then
+            [ -f "$dest" ] && cp "$dest" "${dest}.bak"
+            mv "$dest.tmp" "$dest"
+            info "${name} 更新成功（$(du -sh "$dest" | cut -f1)）"
+        else
+            rm -f "$dest.tmp"
+            error "${name} 下载失败"
+        fi
+    }
+
+    _dl_file "$geoip_url"   "$CONFIG_DIR/country.mmdb"  "Country.mmdb"
+    _dl_file "$asn_url"     "$CONFIG_DIR/ASN.mmdb"      "ASN.mmdb"
+    _dl_file "$geosite_url" "$CONFIG_DIR/geosite.dat"   "GeoSite.dat"
+
+    echo ""
+    if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        if ask "是否重启服务以加载新数据库？" y; then
+            systemctl restart "$SERVICE_NAME" && info "服务已重启" || error "重启失败"
+        fi
+    fi
+    pause
+}
+
+_config_add_rule() {
+    require_root || { pause; return; }
+    clear
+    title "添加域名规则"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "配置文件不存在: $CONFIG_FILE"
+        pause; return
+    fi
+
+    echo "  此操作将在 GEOIP,LAN,DIRECT 规则之前插入新的域名规则。"
+    echo ""
+    printf "  请输入域名（如 example.com）: "
+    read -r domain
+    [ -z "$domain" ] && { error "域名不能为空"; pause; return; }
+
+    echo ""
+    echo "  规则动作:"
+    echo "  1. DIRECT  （直连）"
+    echo "  2. 自定义策略组"
+    echo ""
+    printf "  请选择 [1/2]: "
+    read -r action_choice
+
+    local action
+    case "$action_choice" in
+        1)
+            action="DIRECT"
+            ;;
+        2)
+            echo ""
+            echo "  当前策略组列表:"
+            grep -A1 'proxy-groups:' "$CONFIG_FILE" | grep 'name:' | \
+                sed 's/.*name:[[:space:]]*/    • /' | sed 's/[[:space:]]*$//'
+            echo ""
+            printf "  请输入策略组名称: "
+            read -r action
+            [ -z "$action" ] && { error "策略组名称不能为空"; pause; return; }
+            ;;
+        *)
+            error "无效选项"
+            pause; return
+            ;;
+    esac
+
+    echo ""
+    echo "  规则类型:"
+    echo "  1. DOMAIN-SUFFIX  （匹配域名及子域名）"
+    echo "  2. DOMAIN         （精确匹配域名）"
+    echo "  3. DOMAIN-KEYWORD （关键词匹配）"
+    echo ""
+    printf "  请选择 [1/2/3，默认1]: "
+    read -r type_choice
+
+    local rule_type
+    case "$type_choice" in
+        2) rule_type="DOMAIN" ;;
+        3) rule_type="DOMAIN-KEYWORD" ;;
+        *) rule_type="DOMAIN-SUFFIX" ;;
+    esac
+
+    local new_rule="    - ${rule_type},${domain},${action}"
+
+    # 找到 GEOIP,LAN 或 GEOIP,CN 行并在之前插入
+    if grep -q 'GEOIP,LAN,DIRECT' "$CONFIG_FILE"; then
+        local anchor='GEOIP,LAN,DIRECT'
+    elif grep -q 'GEOIP,CN,DIRECT' "$CONFIG_FILE"; then
+        local anchor='GEOIP,CN,DIRECT'
+    else
+        error "未找到 GEOIP,LAN,DIRECT 或 GEOIP,CN,DIRECT 锚点行，无法自动插入"
+        pause; return
+    fi
+
+    # 备份
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+
+    # 在锚点行前插入
+    sed -i "/${anchor}/i\\${new_rule}" "$CONFIG_FILE"
+
+    echo ""
+    info "已添加规则: ${new_rule}"
+
+    if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        if ask "是否重启服务以应用规则？" y; then
+            systemctl restart "$SERVICE_NAME" && info "服务已重启" || error "重启失败"
+        fi
+    fi
     pause
 }
 
