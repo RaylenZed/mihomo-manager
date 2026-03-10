@@ -384,7 +384,7 @@ menu_config() {
     while true; do
         clear
         title "配置文件管理"
-        echo "  配置文件路径: ${BOLD}$CONFIG_FILE${NC}"
+        echo -e "  配置文件路径: ${BOLD}$CONFIG_FILE${NC}"
         echo ""
         echo "  1. 查看当前配置摘要"
         echo "  2. 从路径导入配置文件"
