@@ -83,7 +83,7 @@ main_menu() {
         echo -e "${BOLD}${CYAN}"
         echo "  ╔══════════════════════════════════════╗"
         echo "  ║         Mihomo Manager v${SCRIPT_VERSION}         ║"
-        echo "  ╚══════════════════════════════════════╝${NC}"
+        echo -e "  ╚══════════════════════════════════════╝${NC}"
         echo ""
         _status_bar
         echo ""
@@ -474,7 +474,7 @@ _config_tree() {
     clear
     title "目录结构说明"
     echo "  $CONFIG_DIR/"
-    echo "  ├── config.yaml     ← ${YELLOW}主配置文件（放这里）${NC}"
+    echo -e "  ├── config.yaml     ← ${YELLOW}主配置文件（放这里）${NC}"
     echo "  ├── Country.mmdb    ← GeoIP 数据库（自动下载）"
     echo "  ├── ASN.mmdb        ← ASN 数据库（自动下载）"
     echo "  └── ruleset/        ← 规则集缓存目录"
@@ -482,13 +482,13 @@ _config_tree() {
     divider
     echo ""
     echo "  从本机 scp 上传配置："
-    echo "  ${CYAN}scp /本机/config.yaml 服务器:$CONFIG_FILE${NC}"
+    echo -e "  ${CYAN}scp /本机/config.yaml 服务器:$CONFIG_FILE${NC}"
     echo ""
     echo "  Web 控制面板（浏览器访问）："
     local ctrl
     ctrl=$(grep 'external-controller' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
-    [ -n "$ctrl" ] && echo "  ${CYAN}http://服务器IP:$(echo "$ctrl" | cut -d: -f2)${NC}" \
-                   || echo "  ${DIM}（配置文件中未设置 external-controller）${NC}"
+    [ -n "$ctrl" ] && echo -e "  ${CYAN}http://服务器IP:$(echo "$ctrl" | cut -d: -f2)${NC}" \
+                   || echo -e "  ${DIM}（配置文件中未设置 external-controller）${NC}"
     pause
 }
 
