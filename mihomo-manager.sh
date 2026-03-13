@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.4.2"
+SCRIPT_VERSION="2.5.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -352,6 +352,33 @@ _install_geodata() {
 }
 
 _install_service() {
+    # 创建 ip rule 辅助脚本（动态读取 fake-ip-range）
+    cat > "$CONFIG_DIR/mihomo-rules.sh" << 'RULES'
+#!/bin/bash
+# Mihomo TUN 路由修正脚本
+# 由 mihomo-manager 自动生成，请勿手动修改
+ACTION="${1:-add}"
+CONFIG="/etc/mihomo/config.yaml"
+
+# 检测默认出口网卡
+IFACE=$(ip route show default 2>/dev/null | awk '/^default/{print $5}' | head -1)
+
+# 从配置文件读取 fake-ip-range，未配置则使用默认值
+FAKEIP=$(grep 'fake-ip-range' "$CONFIG" 2>/dev/null | awk '{print $2}' | tr -d "'\"" | head -1)
+[ -z "$FAKEIP" ] && FAKEIP="198.18.0.0/16"
+
+# 规则 1: 公网入站走 main（防止被 TUN 劫持）
+[ -n "$IFACE" ] && ip rule "$ACTION" priority 100 iif "$IFACE" lookup main 2>/dev/null || true
+
+# 规则 2: Docker 容器访问 fake-ip → 送回 Mihomo（DNS 还原）
+ip rule "$ACTION" priority 190 from 172.16.0.0/12 to "$FAKEIP" lookup 2022 2>/dev/null || true
+
+# 规则 3: Docker 其余流量（DNAT 回包等）→ main 直连
+ip rule "$ACTION" priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true
+RULES
+    chmod +x "$CONFIG_DIR/mihomo-rules.sh"
+    info "路由修正脚本已创建: $CONFIG_DIR/mihomo-rules.sh"
+
     cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Mihomo Proxy Service
@@ -361,8 +388,8 @@ After=network.target NetworkManager.service systemd-networkd.service
 Type=simple
 User=root
 ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
-ExecStartPost=/bin/bash -c 'sleep 1; IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule add priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule add priority 190 from 172.16.0.0/12 to 198.18.0.0/16 lookup 2022 2>/dev/null || true; ip rule add priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
-ExecStopPost=/bin/bash -c 'IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule del priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule del priority 190 from 172.16.0.0/12 to 198.18.0.0/16 lookup 2022 2>/dev/null || true; ip rule del priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
+ExecStartPost=/bin/bash -c 'sleep 1 && /etc/mihomo/mihomo-rules.sh add'
+ExecStopPost=/etc/mihomo/mihomo-rules.sh del
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -392,6 +419,7 @@ menu_config() {
         echo "  4. 编辑配置文件"
         echo "  5. 更新 GeoIP/GeoSite 数据库"
         echo "  6. 添加域名直连/代理规则"
+        echo "  7. 重建路由规则"
         echo "  0. 返回主菜单"
         echo ""
         printf "  请输入选项: "
@@ -403,6 +431,7 @@ menu_config() {
             4) _config_edit ;;
             5) _config_update_geodata ;;
             6) _config_add_rule ;;
+            7) _config_rebuild_rules ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
@@ -421,6 +450,28 @@ _config_show() {
     info "代理模式:  $(grep '^mode:' "$CONFIG_FILE" | awk '{print $2}')"
     info "TUN 模式:  $(grep -A2 '^tun:' "$CONFIG_FILE" | grep 'enable' | awk '{print $2}')"
     info "DNS 模式:  $(grep 'enhanced-mode' "$CONFIG_FILE" | awk '{print $2}')"
+
+    # fake-ip-range 检测
+    local dns_mode fakeip_range
+    dns_mode=$(grep 'enhanced-mode' "$CONFIG_FILE" | awk '{print $2}')
+    if [ "$dns_mode" = "fake-ip" ]; then
+        fakeip_range=$(grep 'fake-ip-range' "$CONFIG_FILE" | awk '{print $2}' | tr -d "'\"")
+        if [ -n "$fakeip_range" ]; then
+            info "Fake-IP:   $fakeip_range"
+        else
+            warn "Fake-IP:   未设置（将使用默认 198.18.0.0/16）"
+        fi
+        # 检查路由规则脚本是否存在且匹配
+        if [ -f "$CONFIG_DIR/mihomo-rules.sh" ]; then
+            local rule_fakeip
+            rule_fakeip=$(grep 'FAKEIP=' "$CONFIG_DIR/mihomo-rules.sh" 2>/dev/null | grep -v '^\s*#' | tail -1 | grep -o '"[^"]*"' | tr -d '"')
+            if [ -n "$rule_fakeip" ] && [ "$rule_fakeip" != "${fakeip_range:-198.18.0.0/16}" ]; then
+                warn "路由规则中的 fake-ip-range（${rule_fakeip}）与配置不一致！"
+                warn "请重新安装服务或运行「重建路由规则」修复"
+            fi
+        fi
+    fi
+
     echo ""
     divider
     echo -e "  ${BOLD}代理节点:${NC}"
@@ -656,6 +707,83 @@ _config_add_rule() {
             systemctl restart "$SERVICE_NAME" && info "服务已重启" || error "重启失败"
         fi
     fi
+    pause
+}
+
+_config_rebuild_rules() {
+    require_root || { pause; return; }
+    clear
+    title "重建路由规则"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "配置文件不存在: $CONFIG_FILE"
+        pause; return
+    fi
+
+    # 读取当前 fake-ip-range
+    local dns_mode fakeip
+    dns_mode=$(grep 'enhanced-mode' "$CONFIG_FILE" | awk '{print $2}')
+    fakeip=$(grep 'fake-ip-range' "$CONFIG_FILE" | awk '{print $2}' | tr -d "'\"")
+    [ -z "$fakeip" ] && fakeip="198.18.0.0/16"
+
+    info "DNS 模式:       $dns_mode"
+    info "Fake-IP Range:  $fakeip"
+
+    # 检查现有规则脚本
+    if [ -f "$CONFIG_DIR/mihomo-rules.sh" ]; then
+        local old_fakeip
+        old_fakeip=$(grep 'FAKEIP=' "$CONFIG_DIR/mihomo-rules.sh" 2>/dev/null | grep -v '^\s*#' | tail -1 | grep -o '"[^"]*"' | tr -d '"')
+        if [ -n "$old_fakeip" ] && [ "$old_fakeip" = "$fakeip" ]; then
+            info "路由规则已是最新，无需重建"
+            pause; return
+        fi
+        [ -n "$old_fakeip" ] && warn "当前规则中的范围: $old_fakeip → 将更新为: $fakeip"
+    else
+        warn "路由规则脚本不存在，将创建"
+    fi
+
+    echo ""
+    if ! ask "确认重建路由规则？" y; then
+        pause; return
+    fi
+
+    # 先清理旧规则
+    [ -x "$CONFIG_DIR/mihomo-rules.sh" ] && "$CONFIG_DIR/mihomo-rules.sh" del 2>/dev/null
+
+    # 重新生成规则脚本
+    cat > "$CONFIG_DIR/mihomo-rules.sh" << 'RULES'
+#!/bin/bash
+# Mihomo TUN 路由修正脚本
+# 由 mihomo-manager 自动生成，请勿手动修改
+ACTION="${1:-add}"
+CONFIG="/etc/mihomo/config.yaml"
+
+# 检测默认出口网卡
+IFACE=$(ip route show default 2>/dev/null | awk '/^default/{print $5}' | head -1)
+
+# 从配置文件读取 fake-ip-range，未配置则使用默认值
+FAKEIP=$(grep 'fake-ip-range' "$CONFIG" 2>/dev/null | awk '{print $2}' | tr -d "'\"" | head -1)
+[ -z "$FAKEIP" ] && FAKEIP="198.18.0.0/16"
+
+# 规则 1: 公网入站走 main（防止被 TUN 劫持）
+[ -n "$IFACE" ] && ip rule "$ACTION" priority 100 iif "$IFACE" lookup main 2>/dev/null || true
+
+# 规则 2: Docker 容器访问 fake-ip → 送回 Mihomo（DNS 还原）
+ip rule "$ACTION" priority 190 from 172.16.0.0/12 to "$FAKEIP" lookup 2022 2>/dev/null || true
+
+# 规则 3: Docker 其余流量（DNAT 回包等）→ main 直连
+ip rule "$ACTION" priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true
+RULES
+    chmod +x "$CONFIG_DIR/mihomo-rules.sh"
+    info "规则脚本已重建"
+
+    # 应用新规则
+    "$CONFIG_DIR/mihomo-rules.sh" add
+    info "新规则已应用"
+
+    echo ""
+    echo -e "  ${BOLD}当前 ip rule:${NC}"
+    ip rule show | grep -E 'priority (100|190|200)' | sed 's/^/    /'
     pause
 }
 
