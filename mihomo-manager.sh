@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.4.1"
+SCRIPT_VERSION="2.4.2"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -361,8 +361,8 @@ After=network.target NetworkManager.service systemd-networkd.service
 Type=simple
 User=root
 ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
-ExecStartPost=/bin/bash -c 'sleep 1; IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule add priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule add priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
-ExecStopPost=/bin/bash -c 'IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule del priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule del priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
+ExecStartPost=/bin/bash -c 'sleep 1; IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule add priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule add priority 190 from 172.16.0.0/12 to 198.18.0.0/16 lookup 2022 2>/dev/null || true; ip rule add priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
+ExecStopPost=/bin/bash -c 'IFACE=$(ip route show default 2>/dev/null | awk "/^default/{print \$5}" | head -1); [ -n "$IFACE" ] && ip rule del priority 100 iif $IFACE lookup main 2>/dev/null || true; ip rule del priority 190 from 172.16.0.0/12 to 198.18.0.0/16 lookup 2022 2>/dev/null || true; ip rule del priority 200 from 172.16.0.0/12 lookup main 2>/dev/null || true'
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
