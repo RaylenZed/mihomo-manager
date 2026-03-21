@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.6.1"
+SCRIPT_VERSION="2.7.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -1941,62 +1941,216 @@ _docker_proxy_test() {
 # ════════════════════════════════════════════════════════════
 #  管理面板（Web UI）
 # ════════════════════════════════════════════════════════════
-menu_webui() {
-    clear
-    title "管理面板（Web UI）"
+UI_DIR="$CONFIG_DIR/ui"
 
-    if [ ! -f "$CONFIG_FILE" ]; then
-        error "配置文件不存在，无法读取控制面板信息"
-        pause; return
-    fi
+_webui_read_config() {
+    local ctrl_addr
+    ctrl_addr=$(grep 'external-controller' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}')
+    WEBUI_PORT=$(echo "$ctrl_addr" | cut -d: -f2)
+    WEBUI_SECRET=$(grep '^secret:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    WEBUI_EXTUI=$(grep '^external-ui:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    WEBUI_IP=$(_local_ip)
+}
 
-    local ctrl_addr ctrl_port ctrl_secret
-    ctrl_addr=$(grep 'external-controller' "$CONFIG_FILE" | awk '{print $2}')
-    ctrl_port=$(echo "$ctrl_addr" | cut -d: -f2)
-    ctrl_secret=$(grep 'secret' "$CONFIG_FILE" | grep -v '#' | awk '{print $2}' | head -1)
-
-    if [ -z "$ctrl_port" ]; then
-        warn "配置文件中未设置 external-controller"
-        warn "请在 config.yaml 中添加：external-controller: 0.0.0.0:9090"
-        pause; return
-    fi
-
-    local lan_ip
-    lan_ip=$(_local_ip)
-
-    local api_url="http://${lan_ip}:${ctrl_port}"
-
-    echo -e "  ${BOLD}控制 API 地址${NC}"
-    echo -e "  ${CYAN}${api_url}${NC}"
-    [ -n "$ctrl_secret" ] && echo -e "  Secret: ${YELLOW}${ctrl_secret}${NC}"
-    echo ""
-    divider
-    echo -e "  ${BOLD}Web 面板（在浏览器中打开以下任一链接）${NC}"
-    echo ""
-
-    if [ -n "$ctrl_secret" ]; then
-        echo -e "  ${GREEN}Metacubexd（推荐）:${NC}"
-        echo -e "  ${CYAN}https://metacubex.github.io/metacubexd/#/setup${NC}"
-        echo ""
-        echo -e "  ${GREEN}Yacd-meta:${NC}"
-        echo -e "  ${CYAN}https://yacd.metacubex.one${NC}"
-        echo ""
-        echo -e "  ${DIM}打开上方任意链接后，在配置页填写：${NC}"
-        echo -e "  ${DIM}  • API 地址: ${api_url}${NC}"
-        echo -e "  ${DIM}  • Secret:   ${ctrl_secret}${NC}"
+_webui_url() {
+    # 生成完整访问链接
+    local base="$1"  # http://IP:PORT/ui 或外部 URL
+    local secret="${WEBUI_SECRET}"
+    if [ -n "$secret" ]; then
+        echo "${base}?hostname=${WEBUI_IP}&port=${WEBUI_PORT}&secret=${secret}"
     else
-        echo -e "  ${GREEN}Metacubexd（推荐）:${NC}"
-        echo -e "  ${CYAN}https://metacubex.github.io/metacubexd/?hostname=${lan_ip}&port=${ctrl_port}&secret=${NC}"
+        echo "${base}?hostname=${WEBUI_IP}&port=${WEBUI_PORT}&secret="
+    fi
+}
+
+menu_webui() {
+    while true; do
+        clear
+        title "管理面板（Web UI）"
+
+        if [ ! -f "$CONFIG_FILE" ]; then
+            error "配置文件不存在"; pause; return
+        fi
+
+        _webui_read_config
+
+        if [ -z "$WEBUI_PORT" ]; then
+            warn "配置文件中未设置 external-controller"
+            warn "请在 config.yaml 中添加：external-controller: 0.0.0.0:9090"
+            pause; return
+        fi
+
+        # 状态栏
+        echo -e "  API地址:  ${CYAN}http://${WEBUI_IP}:${WEBUI_PORT}${NC}"
+        if [ -n "$WEBUI_SECRET" ]; then
+            echo -e "  Secret:   ${GREEN}${WEBUI_SECRET}${NC}"
+        else
+            echo -e "  Secret:   ${YELLOW}未设置（建议配置）${NC}"
+        fi
+        if [ -n "$WEBUI_EXTUI" ]; then
+            echo -e "  本地 UI:  ${GREEN}已安装 → http://${WEBUI_IP}:${WEBUI_PORT}/ui${NC}"
+        else
+            echo -e "  本地 UI:  ${DIM}未安装（当前使用在线版）${NC}"
+        fi
+
         echo ""
-        echo -e "  ${GREEN}Yacd-meta:${NC}"
-        echo -e "  ${CYAN}http://yacd.metacubex.one/?hostname=${lan_ip}&port=${ctrl_port}&secret=${NC}"
+        divider
+        # 访问链接
+        if [ -n "$WEBUI_EXTUI" ]; then
+            echo -e "  ${BOLD}本地面板地址（推荐）:${NC}"
+            echo -e "  ${CYAN}http://${WEBUI_IP}:${WEBUI_PORT}/ui${NC}"
+            echo ""
+        fi
+        echo -e "  ${BOLD}在线面板备用:${NC}"
+        echo -e "  Metacubexd: ${CYAN}$(_webui_url "https://metacubex.github.io/metacubexd")${NC}"
+        echo -e "  Yacd-meta:  ${CYAN}$(_webui_url "http://yacd.metacubex.one")${NC}"
         echo ""
-        echo -e "  ${DIM}（未设置 secret，以上链接可直接打开）${NC}"
+        divider
+        echo -e "  1. 安装本地 UI（Metacubexd）    ${YELLOW}[需要root]${NC}"
+        echo -e "  2. 安装本地 UI（Yacd-meta）     ${YELLOW}[需要root]${NC}"
+        echo -e "  3. 设置 / 修改 Secret           ${YELLOW}[需要root]${NC}"
+        echo -e "  4. 移除本地 UI                  ${YELLOW}[需要root]${NC}"
+        echo "  0. 返回"
+        echo ""
+        printf "  请输入选项: "
+        read -r c
+        case "$c" in
+            1) _webui_install "metacubexd" ;;
+            2) _webui_install "yacd" ;;
+            3) _webui_set_secret ;;
+            4) _webui_remove ;;
+            0) return ;;
+            *) error "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+_webui_install() {
+    require_root || { pause; return; }
+    local flavor="$1"
+    clear
+    title "安装本地 UI - ${flavor}"
+
+    local download_url filename
+    if [ "$flavor" = "metacubexd" ]; then
+        download_url="https://github.com/MetaCubeX/metacubexd/releases/latest/download/compressed-dist.tgz"
+        filename="compressed-dist.tgz"
+    else
+        download_url="https://github.com/MetaCubeX/yacd/releases/latest/download/yacd-meta.gh-pages.zip"
+        filename="yacd-meta.gh-pages.zip"
     fi
 
+    local tmp
+    tmp=$(mktemp -d)
+    trap "rm -rf '$tmp'" RETURN
+
+    info "下载 ${flavor}..."
+    if ! curl -L --max-time 60 -o "$tmp/$filename" "$download_url" --progress-bar; then
+        error "下载失败，请检查网络后重试"
+        pause; return
+    fi
+
+    info "解压安装到 ${UI_DIR}..."
+    rm -rf "$UI_DIR"
+    mkdir -p "$UI_DIR"
+
+    if [[ "$filename" == *.tgz ]]; then
+        tar -xzf "$tmp/$filename" -C "$UI_DIR" --strip-components=0
+    else
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -q "$tmp/$filename" -d "$tmp/unzipped"
+        else
+            python3 -c "import zipfile,sys; zipfile.ZipFile('$tmp/$filename').extractall('$tmp/unzipped')"
+        fi
+        # yacd 解压后是 public 子目录
+        local inner
+        inner=$(ls "$tmp/unzipped/" | head -1)
+        if [ -d "$tmp/unzipped/$inner" ]; then
+            cp -r "$tmp/unzipped/$inner/." "$UI_DIR/"
+        else
+            cp -r "$tmp/unzipped/." "$UI_DIR/"
+        fi
+    fi
+
+    # 写入 external-ui 配置
+    if ! grep -q '^external-ui:' "$CONFIG_FILE"; then
+        sed -i "s|^external-controller:|external-ui: ${UI_DIR}\nexternal-controller:|" "$CONFIG_FILE"
+    else
+        sed -i "s|^external-ui:.*|external-ui: ${UI_DIR}|" "$CONFIG_FILE"
+    fi
+
+    info "UI 文件已安装到 ${UI_DIR}"
+    info "配置已写入 external-ui: ${UI_DIR}"
+
     echo ""
-    divider
-    echo -e "  ${DIM}提示: 若外部访问不通，请确认防火墙已放行 ${ctrl_port} 端口${NC}"
+    if systemctl is-active mihomo >/dev/null 2>&1; then
+        if ask "是否立即重启 Mihomo 使配置生效？" y; then
+            systemctl restart mihomo && info "Mihomo 已重启" || error "重启失败"
+        fi
+    fi
+
+    _webui_read_config
+    echo ""
+    info "安装完成！访问地址："
+    echo -e "  ${CYAN}http://${WEBUI_IP}:${WEBUI_PORT}/ui${NC}"
+    pause
+}
+
+_webui_set_secret() {
+    require_root || { pause; return; }
+    clear
+    title "设置 Secret"
+
+    local current
+    current=$(grep '^secret:' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    [ -n "$current" ] && echo -e "  当前 Secret: ${YELLOW}${current}${NC}" || echo -e "  当前 Secret: ${DIM}未设置${NC}"
+    echo ""
+    echo -e "  ${DIM}Secret 用于保护管理面板，防止未授权访问${NC}"
+    echo -e "  ${DIM}留空并回车可生成随机 Secret，输入 - 可清除${NC}"
+    echo ""
+    printf "  请输入新 Secret（留空自动生成）: "
+    read -r new_secret
+
+    if [ "$new_secret" = "-" ]; then
+        new_secret=""
+        echo -e "  ${DIM}将清除 Secret${NC}"
+    elif [ -z "$new_secret" ]; then
+        new_secret=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 16 || \
+                     python3 -c "import secrets; print(secrets.token_urlsafe(12))")
+        echo -e "  自动生成: ${GREEN}${new_secret}${NC}"
+    fi
+
+    # 更新或写入 secret
+    if grep -q '^secret:' "$CONFIG_FILE"; then
+        sed -i "s|^secret:.*|secret: ${new_secret}|" "$CONFIG_FILE"
+    else
+        sed -i "s|^external-controller:|secret: ${new_secret}\nexternal-controller:|" "$CONFIG_FILE"
+    fi
+
+    [ -n "$new_secret" ] && info "Secret 已设置为: ${new_secret}" || info "Secret 已清除"
+
+    echo ""
+    if systemctl is-active mihomo >/dev/null 2>&1; then
+        if ask "是否立即重启 Mihomo 使配置生效？" y; then
+            systemctl restart mihomo && info "Mihomo 已重启" || error "重启失败"
+        fi
+    fi
+    pause
+}
+
+_webui_remove() {
+    require_root || { pause; return; }
+    clear
+    title "移除本地 UI"
+    ask "确定要移除本地 UI 文件并清除 external-ui 配置吗？" n || return
+
+    rm -rf "$UI_DIR"
+    sed -i '/^external-ui:/d' "$CONFIG_FILE"
+    info "本地 UI 已移除"
+
+    if systemctl is-active mihomo >/dev/null 2>&1; then
+        ask "是否重启 Mihomo？" y && systemctl restart mihomo
+    fi
     pause
 }
 
