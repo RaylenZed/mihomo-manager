@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.7.0"
+SCRIPT_VERSION="2.7.1"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -149,12 +149,12 @@ main_menu() {
         divider
         echo -e "  ${BOLD}其他${NC}"
         divider
+        echo " 13. 管理面板（Web UI）"
+        echo " 14. 复制代理链接"
         echo -e " 15. 系统网络设置（IPv6） ${_root_tag}"
         echo -e " 16. Docker 代理设置      ${_root_tag}"
-        echo " 17. 管理面板（Web UI）"
-        echo " 18. 复制代理链接"
-        echo -e " 13. 脚本自更新           ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
-        echo -e " 14. 卸载 Mihomo          ${_root_tag}"
+        echo -e " 17. 脚本自更新           ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
+        echo -e " 18. 卸载 Mihomo          ${_root_tag}"
         echo "  0. 退出"
         divider
         echo ""
@@ -174,12 +174,12 @@ main_menu() {
             10) menu_log ;;
             11) menu_tailscale_manage ;;
             12) menu_tailscale_compat ;;
-            13) menu_self_update ;;
-            14) menu_uninstall ;;
+            13) menu_webui ;;
+            14) menu_proxy_link ;;
             15) menu_network_settings ;;
             16) menu_docker_proxy ;;
-            17) menu_webui ;;
-            18) menu_proxy_link ;;
+            17) menu_self_update ;;
+            18) menu_uninstall ;;
             0)  clear; echo "  再见！"; exit 0 ;;
             *)  error "无效选项，请重新输入"; sleep 1 ;;
         esac
