@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.6.0"
+SCRIPT_VERSION="2.6.1"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -28,6 +28,19 @@ title()   { echo -e "\n${BOLD}${CYAN}━━━━━━━━━━━━━━�
             echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"; }
 divider() { echo -e "  ${DIM}────────────────────────────────────${NC}"; }
 pause()   { echo -e "\n  按 ${BOLD}Enter${NC} 返回..."; read -r; }
+
+# 获取本机局域网 IP（兼容 TUN 模式自定义路由表）
+_local_ip() {
+    local iface ip
+    # 先取默认路由出口网卡，再取该网卡 IP，避免被路由表编号污染
+    iface=$(ip route show default 2>/dev/null | awk '/^default/{print $5}' | head -1)
+    if [ -n "$iface" ]; then
+        ip=$(ip addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+    fi
+    # fallback
+    [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "${ip:-127.0.0.1}"
+}
 
 ask() {
     # ask "提示" 默认值(y/n)  →  返回 0=yes 1=no
@@ -1948,10 +1961,8 @@ menu_webui() {
         pause; return
     fi
 
-    # 获取本机 IP
     local lan_ip
-    lan_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7}' | head -1)
-    [ -z "$lan_ip" ] && lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    lan_ip=$(_local_ip)
 
     local api_url="http://${lan_ip}:${ctrl_port}"
 
@@ -2005,8 +2016,7 @@ menu_proxy_link() {
     mixed_port=$(grep 'mixed-port' "$CONFIG_FILE" | awk '{print $2}' | head -1)
     http_port=$(grep '^port:' "$CONFIG_FILE" | awk '{print $2}' | head -1)
     socks_port=$(grep '^socks-port:' "$CONFIG_FILE" | awk '{print $2}' | head -1)
-    lan_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7}' | head -1)
-    [ -z "$lan_ip" ] && lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    lan_ip=$(_local_ip)
 
     echo -e "  ${BOLD}服务器 IP: ${CYAN}${lan_ip}${NC}"
     echo ""
