@@ -12,7 +12,7 @@ SERVICE_FILE="/etc/systemd/system/mihomo.service"
 SERVICE_NAME="mihomo"
 LATEST_VERSION_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 SCRIPT_PATH="$(realpath "$0")"
-SCRIPT_VERSION="2.5.0"
+SCRIPT_VERSION="2.6.0"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/mihomo-manager.sh"
 SCRIPT_VERSION_URL="https://raw.githubusercontent.com/RaylenZed/mihomo-manager/main/version"
 
@@ -44,7 +44,18 @@ ask() {
 }
 
 require_root() {
-    [ "$(id -u)" -eq 0 ] || { error "此操作需要 root 权限，请使用 sudo 运行"; return 1; }
+    if [ "$(id -u)" -ne 0 ]; then
+        echo ""
+        error "此操作需要 root 权限"
+        echo ""
+        echo -e "  ${BOLD}当前用户:${NC} $(id -un)（非 root）"
+        echo ""
+        echo -e "  ${YELLOW}解决方法：${NC}"
+        echo -e "  ${CYAN}sudo $(realpath "$0" 2>/dev/null || echo "$0")${NC}"
+        echo -e "  ${DIM}以 root 身份重新运行脚本，再选择此操作${NC}"
+        echo ""
+        return 1
+    fi
 }
 
 # ── 状态摘要 ─────────────────────────────────────────────────
@@ -87,21 +98,28 @@ main_menu() {
         echo ""
         _status_bar
         echo ""
+        # root 状态提示
+        if [ "$(id -u)" -eq 0 ]; then
+            local _root_tag="${GREEN}[root]${NC}"
+        else
+            local _root_tag="${YELLOW}[需要root]${NC}"
+        fi
+
         divider
         echo -e "  ${BOLD}Mihomo 服务${NC}"
         divider
         echo "  1. 查看状态"
-        echo "  2. 启动服务"
-        echo "  3. 停止服务"
-        echo "  4. 重启服务"
-        echo "  5. 开机自启设置"
+        echo -e "  2. 启动服务              ${_root_tag}"
+        echo -e "  3. 停止服务              ${_root_tag}"
+        echo -e "  4. 重启服务              ${_root_tag}"
+        echo -e "  5. 开机自启设置          ${_root_tag}"
         echo ""
         divider
         echo -e "  ${BOLD}安装与配置${NC}"
         divider
-        echo "  6. 安装 Mihomo"
+        echo -e "  6. 安装 Mihomo           ${_root_tag}"
         echo "  7. 配置文件管理"
-        echo "  8. 更新 Mihomo"
+        echo -e "  8. 更新 Mihomo           ${_root_tag}"
         echo ""
         divider
         echo -e "  ${BOLD}诊断与监控${NC}"
@@ -112,16 +130,18 @@ main_menu() {
         divider
         echo -e "  ${BOLD}Tailscale${NC}"
         divider
-        echo " 11. Tailscale 管理"
-        echo " 12. Tailscale 兼容设置"
+        echo -e " 11. Tailscale 管理       ${_root_tag}"
+        echo -e " 12. Tailscale 兼容设置   ${_root_tag}"
         echo ""
         divider
         echo -e "  ${BOLD}其他${NC}"
         divider
-        echo " 15. 系统网络设置（IPv6 管理）"
-        echo " 16. Docker 代理设置"
-        echo -e " 13. 脚本自更新  ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
-        echo " 14. 卸载 Mihomo"
+        echo -e " 15. 系统网络设置（IPv6） ${_root_tag}"
+        echo -e " 16. Docker 代理设置      ${_root_tag}"
+        echo " 17. 管理面板（Web UI）"
+        echo " 18. 复制代理链接"
+        echo -e " 13. 脚本自更新           ${DIM}(当前 v${SCRIPT_VERSION})${NC}"
+        echo -e " 14. 卸载 Mihomo          ${_root_tag}"
         echo "  0. 退出"
         divider
         echo ""
@@ -145,6 +165,8 @@ main_menu() {
             14) menu_uninstall ;;
             15) menu_network_settings ;;
             16) menu_docker_proxy ;;
+            17) menu_webui ;;
+            18) menu_proxy_link ;;
             0)  clear; echo "  再见！"; exit 0 ;;
             *)  error "无效选项，请重新输入"; sleep 1 ;;
         esac
@@ -1537,9 +1559,33 @@ _ipv6_show() {
 #  Docker 代理设置
 # ════════════════════════════════════════════════════════════
 DOCKER_PROXY_CONF="/etc/systemd/system/docker.service.d/proxy.conf"
+DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
+
+# 检测 Docker 是由系统（飞牛OS/群晖等 NAS）托管还是标准 systemd 方式
+_docker_is_nas_managed() {
+    # 飞牛OS 的 docker.service 描述含 "trim"，或 daemon.json 有 data-root 非默认路径
+    systemctl cat docker 2>/dev/null | grep -qi 'trim\|fnos\|fnnas' && return 0
+    local data_root
+    data_root=$(python3 -c "import json,sys; d=json.load(open('$DOCKER_DAEMON_JSON')); print(d.get('data-root',''))" 2>/dev/null)
+    [ -n "$data_root" ] && [ "$data_root" != "/var/lib/docker" ] && return 0
+    return 1
+}
+
+_docker_proxy_enabled_systemd() {
+    [ -f "$DOCKER_PROXY_CONF" ] && grep -q 'HTTP_PROXY' "$DOCKER_PROXY_CONF" 2>/dev/null
+}
+
+_docker_proxy_enabled_daemonjson() {
+    [ -f "$DOCKER_DAEMON_JSON" ] && python3 -c "
+import json,sys
+d=json.load(open('$DOCKER_DAEMON_JSON'))
+p=d.get('proxies',{})
+sys.exit(0 if p.get('http-proxy') or p.get('https-proxy') else 1)
+" 2>/dev/null
+}
 
 _docker_proxy_enabled() {
-    [ -f "$DOCKER_PROXY_CONF" ] && grep -q 'HTTP_PROXY' "$DOCKER_PROXY_CONF" 2>/dev/null
+    _docker_proxy_enabled_systemd || _docker_proxy_enabled_daemonjson
 }
 
 menu_docker_proxy() {
@@ -1548,7 +1594,9 @@ menu_docker_proxy() {
         title "Docker 代理设置"
 
         if ! command -v docker >/dev/null 2>&1; then
-            warn "Docker 未安装"
+            warn "Docker 未安装或当前用户无权访问"
+            echo ""
+            echo -e "  ${DIM}提示: Docker 可能需要 root 或 docker 组权限${NC}"
             echo ""
             echo "  0. 返回"
             echo ""
@@ -1557,45 +1605,68 @@ menu_docker_proxy() {
         fi
 
         local port
-        port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
+        port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+        port="${port:-7890}"
+        local docker_host_ip="172.17.0.1"
 
-        if _docker_proxy_enabled; then
-            echo -e "  Docker daemon 代理: ${GREEN}● 已启用${NC}"
+        # 检测 Docker 托管类型
+        local managed_type="标准 systemd"
+        _docker_is_nas_managed && managed_type="${YELLOW}NAS 系统托管（飞牛OS等）${NC}"
+
+        echo -e "  Docker 托管方式: ${managed_type}"
+        echo ""
+
+        # 显示当前代理状态
+        if _docker_proxy_enabled_systemd; then
             local cur
             cur=$(grep 'HTTPS_PROXY' "$DOCKER_PROXY_CONF" 2>/dev/null | grep -o 'http[^"]*' | head -1)
-            [ -n "$cur" ] && echo -e "  代理地址: ${CYAN}$cur${NC}"
+            echo -e "  daemon 代理（systemd）: ${GREEN}● 已启用${NC}  ${DIM}${cur}${NC}"
         else
-            echo -e "  Docker daemon 代理: ${YELLOW}● 未配置${NC}"
+            echo -e "  daemon 代理（systemd）: ${DIM}● 未配置${NC}"
+        fi
+
+        if _docker_proxy_enabled_daemonjson; then
+            local cur2
+            cur2=$(python3 -c "import json; d=json.load(open('$DOCKER_DAEMON_JSON')); print(d.get('proxies',{}).get('https-proxy',''))" 2>/dev/null)
+            echo -e "  daemon 代理（daemon.json）: ${GREEN}● 已启用${NC}  ${DIM}${cur2}${NC}"
+        else
+            echo -e "  daemon 代理（daemon.json）: ${DIM}● 未配置${NC}"
         fi
 
         echo ""
-        echo "  说明: 配置后 Docker daemon 拉取镜像走代理"
-        echo -e "  ${DIM}容器内应用另需 -e HTTP_PROXY=http://172.17.0.1:${port}${NC}"
+        divider
+        echo -e "  ${BOLD}两种代理方式说明:${NC}"
+        echo -e "  ${CYAN}A. systemd 方式${NC}  适合标准 Linux，daemon 拉镜像走代理"
+        echo -e "  ${CYAN}B. daemon.json 方式${NC}  适合飞牛OS/群晖等，容器内程序也走代理"
+        echo -e "  ${DIM}（Dify 插件安装失败请用 B 方式）${NC}"
         echo ""
-        echo "  1. 启用 Docker daemon 代理"
-        echo "  2. 禁用 Docker daemon 代理"
-        echo "  3. 测试 Docker 容器网络"
+        echo -e "  1. 启用代理 - A（systemd drop-in）  ${YELLOW}[需要root]${NC}"
+        echo -e "  2. 启用代理 - B（daemon.json）      ${YELLOW}[需要root]${NC}"
+        echo -e "  3. 禁用全部代理配置                 ${YELLOW}[需要root]${NC}"
+        echo "  4. 测试 Docker 容器网络"
         echo "  0. 返回"
         echo ""
         printf "  请输入选项: "
         read -r c
         case "$c" in
-            1) _docker_proxy_enable ;;
-            2) _docker_proxy_disable ;;
-            3) _docker_proxy_test ;;
+            1) _docker_proxy_enable_systemd ;;
+            2) _docker_proxy_enable_daemonjson ;;
+            3) _docker_proxy_disable ;;
+            4) _docker_proxy_test ;;
             0) return ;;
             *) error "无效选项"; sleep 1 ;;
         esac
     done
 }
 
-_docker_proxy_enable() {
+_docker_proxy_enable_systemd() {
     require_root || { pause; return; }
     clear
-    title "启用 Docker daemon 代理"
+    title "启用 Docker daemon 代理（systemd 方式）"
 
     local port
-    port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' || echo "7890")
+    port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    port="${port:-7890}"
 
     mkdir -p /etc/systemd/system/docker.service.d
     cat > "$DOCKER_PROXY_CONF" << EOF
@@ -1613,30 +1684,116 @@ EOF
         else
             warn "下次重启 Docker daemon 后生效"
         fi
-    else
-        warn "Docker daemon 未运行，启动后自动生效"
     fi
 
     echo ""
-    warn "注意：容器内应用还需传入代理环境变量才能走代理："
-    echo -e "  ${CYAN}docker run -e HTTP_PROXY=http://172.17.0.1:${port} -e HTTPS_PROXY=http://172.17.0.1:${port} ...${NC}"
+    warn "注意: 此方式只影响 daemon 拉取镜像，容器内程序还需单独设代理环境变量"
+    echo -e "  ${DIM}如需容器内也走代理，请改用选项 2（daemon.json 方式）${NC}"
+    pause
+}
+
+_docker_proxy_enable_daemonjson() {
+    require_root || { pause; return; }
+    clear
+    title "启用 Docker 代理（daemon.json 方式）"
+    echo -e "  ${DIM}此方式修改 /etc/docker/daemon.json，适合飞牛OS等 NAS 系统${NC}"
+    echo -e "  ${DIM}配置后容器内的 pip/curl/wget 等程序也会自动走代理${NC}"
+    echo ""
+
+    local port
+    port=$(grep 'mixed-port' "$CONFIG_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    port="${port:-7890}"
+    local proxy_url="http://172.17.0.1:${port}"
+
+    if [ ! -f "$DOCKER_DAEMON_JSON" ]; then
+        warn "$DOCKER_DAEMON_JSON 不存在，将创建新文件"
+        echo "{}" > "$DOCKER_DAEMON_JSON"
+    fi
+
+    # 用 python3 安全地修改 JSON（保留原有字段）
+    if ! command -v python3 >/dev/null 2>&1; then
+        error "需要 python3 来安全修改 JSON，请手动编辑 $DOCKER_DAEMON_JSON"
+        echo ""
+        echo -e "  在 ${CYAN}proxies${NC} 字段中添加："
+        echo "  {\"http-proxy\": \"${proxy_url}\", \"https-proxy\": \"${proxy_url}\", \"no-proxy\": \"localhost,127.0.0.1,172.16.0.0/12\"}"
+        pause; return
+    fi
+
+    python3 - << PYEOF
+import json, sys
+path = "$DOCKER_DAEMON_JSON"
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+d["proxies"] = {
+    "http-proxy":  "$proxy_url",
+    "https-proxy": "$proxy_url",
+    "no-proxy":    "localhost,127.0.0.1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+}
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+print("OK")
+PYEOF
+
+    if [ $? -eq 0 ]; then
+        info "daemon.json 已更新: $DOCKER_DAEMON_JSON"
+    else
+        error "写入失败，请检查文件权限"
+        pause; return
+    fi
+
+    if systemctl is-active docker >/dev/null 2>&1; then
+        echo ""
+        warn "需要重启 Docker daemon 才能生效（会重启所有容器！）"
+        if ask "是否立即重启 Docker daemon？" n; then
+            systemctl restart docker && info "Docker daemon 已重启，代理生效" || error "重启失败"
+        else
+            warn "请稍后手动执行: sudo systemctl restart docker"
+        fi
+    fi
+
+    echo ""
+    info "生效后 Dify 插件安装等操作将自动走代理，无需额外配置"
     pause
 }
 
 _docker_proxy_disable() {
     require_root || { pause; return; }
     clear
-    title "禁用 Docker daemon 代理"
-    ask "确定要移除 Docker daemon 代理配置吗？" n || return
+    title "禁用 Docker 代理配置"
+    ask "确定要移除全部 Docker 代理配置吗？" n || return
 
-    rm -f "$DOCKER_PROXY_CONF"
-    rmdir /etc/systemd/system/docker.service.d 2>/dev/null || true
-    systemctl daemon-reload
+    # 移除 systemd drop-in
+    if [ -f "$DOCKER_PROXY_CONF" ]; then
+        rm -f "$DOCKER_PROXY_CONF"
+        rmdir /etc/systemd/system/docker.service.d 2>/dev/null || true
+        systemctl daemon-reload
+        info "systemd 代理配置已移除"
+    fi
+
+    # 清空 daemon.json 中的 proxies
+    if [ -f "$DOCKER_DAEMON_JSON" ] && command -v python3 >/dev/null 2>&1; then
+        python3 - << PYEOF
+import json
+path = "$DOCKER_DAEMON_JSON"
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+d["proxies"] = {}
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+PYEOF
+        info "daemon.json 代理配置已清空"
+    fi
 
     if systemctl is-active docker >/dev/null 2>&1; then
-        systemctl restart docker && info "Docker daemon 已重启，代理已移除" || error "重启失败"
-    else
-        info "配置已移除，下次启动 Docker 后生效"
+        if ask "是否立即重启 Docker daemon 使配置生效？" y; then
+            systemctl restart docker && info "Docker daemon 已重启" || error "重启失败"
+        fi
     fi
     pause
 }
@@ -1765,6 +1922,140 @@ _docker_proxy_test() {
     else
         error "两种方式均失败，请检查 Mihomo 是否正常运行"
     fi
+    pause
+}
+
+# ════════════════════════════════════════════════════════════
+#  管理面板（Web UI）
+# ════════════════════════════════════════════════════════════
+menu_webui() {
+    clear
+    title "管理面板（Web UI）"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "配置文件不存在，无法读取控制面板信息"
+        pause; return
+    fi
+
+    local ctrl_addr ctrl_port ctrl_secret
+    ctrl_addr=$(grep 'external-controller' "$CONFIG_FILE" | awk '{print $2}')
+    ctrl_port=$(echo "$ctrl_addr" | cut -d: -f2)
+    ctrl_secret=$(grep 'secret' "$CONFIG_FILE" | grep -v '#' | awk '{print $2}' | head -1)
+
+    if [ -z "$ctrl_port" ]; then
+        warn "配置文件中未设置 external-controller"
+        warn "请在 config.yaml 中添加：external-controller: 0.0.0.0:9090"
+        pause; return
+    fi
+
+    # 获取本机 IP
+    local lan_ip
+    lan_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7}' | head -1)
+    [ -z "$lan_ip" ] && lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+    local api_url="http://${lan_ip}:${ctrl_port}"
+
+    echo -e "  ${BOLD}控制 API 地址${NC}"
+    echo -e "  ${CYAN}${api_url}${NC}"
+    [ -n "$ctrl_secret" ] && echo -e "  Secret: ${YELLOW}${ctrl_secret}${NC}"
+    echo ""
+    divider
+    echo -e "  ${BOLD}Web 面板（在浏览器中打开以下任一链接）${NC}"
+    echo ""
+
+    if [ -n "$ctrl_secret" ]; then
+        echo -e "  ${GREEN}Metacubexd（推荐）:${NC}"
+        echo -e "  ${CYAN}https://metacubex.github.io/metacubexd/#/setup${NC}"
+        echo ""
+        echo -e "  ${GREEN}Yacd-meta:${NC}"
+        echo -e "  ${CYAN}https://yacd.metacubex.one${NC}"
+        echo ""
+        echo -e "  ${DIM}打开上方任意链接后，在配置页填写：${NC}"
+        echo -e "  ${DIM}  • API 地址: ${api_url}${NC}"
+        echo -e "  ${DIM}  • Secret:   ${ctrl_secret}${NC}"
+    else
+        echo -e "  ${GREEN}Metacubexd（推荐）:${NC}"
+        echo -e "  ${CYAN}https://metacubex.github.io/metacubexd/?hostname=${lan_ip}&port=${ctrl_port}&secret=${NC}"
+        echo ""
+        echo -e "  ${GREEN}Yacd-meta:${NC}"
+        echo -e "  ${CYAN}http://yacd.metacubex.one/?hostname=${lan_ip}&port=${ctrl_port}&secret=${NC}"
+        echo ""
+        echo -e "  ${DIM}（未设置 secret，以上链接可直接打开）${NC}"
+    fi
+
+    echo ""
+    divider
+    echo -e "  ${DIM}提示: 若外部访问不通，请确认防火墙已放行 ${ctrl_port} 端口${NC}"
+    pause
+}
+
+# ════════════════════════════════════════════════════════════
+#  复制代理链接
+# ════════════════════════════════════════════════════════════
+menu_proxy_link() {
+    clear
+    title "代理链接"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "配置文件不存在，无法读取端口信息"
+        pause; return
+    fi
+
+    local mixed_port http_port socks_port lan_ip
+    mixed_port=$(grep 'mixed-port' "$CONFIG_FILE" | awk '{print $2}' | head -1)
+    http_port=$(grep '^port:' "$CONFIG_FILE" | awk '{print $2}' | head -1)
+    socks_port=$(grep '^socks-port:' "$CONFIG_FILE" | awk '{print $2}' | head -1)
+    lan_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7}' | head -1)
+    [ -z "$lan_ip" ] && lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+    echo -e "  ${BOLD}服务器 IP: ${CYAN}${lan_ip}${NC}"
+    echo ""
+
+    local primary_port="${mixed_port:-${http_port}}"
+    if [ -n "$primary_port" ]; then
+        local proxy_link="http://${lan_ip}:${primary_port}"
+        echo -e "  ${BOLD}HTTP/混合代理链接（可直接填入各客户端）:${NC}"
+        echo ""
+        echo -e "  ${CYAN}${proxy_link}${NC}"
+        echo ""
+        divider
+        echo -e "  ${BOLD}各场景配置格式:${NC}"
+        echo ""
+        echo -e "  ${YELLOW}curl / wget:${NC}"
+        echo -e "  ${DIM}http_proxy=${proxy_link} https_proxy=${proxy_link}${NC}"
+        echo ""
+        echo -e "  ${YELLOW}Linux 环境变量:${NC}"
+        echo -e "  ${DIM}export http_proxy=${proxy_link}${NC}"
+        echo -e "  ${DIM}export https_proxy=${proxy_link}${NC}"
+        echo ""
+        echo -e "  ${YELLOW}Docker 容器代理（可通过主菜单 16 设置）:${NC}"
+        echo -e "  ${DIM}http_proxy=${proxy_link}${NC}"
+        echo ""
+
+        # 尝试复制到剪贴板
+        if command -v xclip >/dev/null 2>&1; then
+            echo -n "$proxy_link" | xclip -selection clipboard 2>/dev/null \
+                && info "已复制到剪贴板 (xclip): ${proxy_link}"
+        elif command -v xsel >/dev/null 2>&1; then
+            echo -n "$proxy_link" | xsel --clipboard --input 2>/dev/null \
+                && info "已复制到剪贴板 (xsel): ${proxy_link}"
+        elif command -v pbcopy >/dev/null 2>&1; then
+            echo -n "$proxy_link" | pbcopy 2>/dev/null \
+                && info "已复制到剪贴板 (pbcopy): ${proxy_link}"
+        else
+            warn "未检测到剪贴板工具，请手动复制上方链接"
+        fi
+    else
+        warn "配置文件中未找到 mixed-port / port，请检查配置"
+    fi
+
+    if [ -n "$socks_port" ]; then
+        echo ""
+        divider
+        echo -e "  ${BOLD}SOCKS5 代理链接:${NC}"
+        echo -e "  ${CYAN}socks5://${lan_ip}:${socks_port}${NC}"
+    fi
+
     pause
 }
 
